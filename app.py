@@ -47,43 +47,4 @@ with st.sidebar:
     
     st.info(f"当前模式：**{strategy_mode}**")
     
-    if st.button("🔄 强制刷新数据"):
-        st.cache_data.clear()
-        st.rerun()
-
-# ==========================================
-# 3. 数据计算引擎 (两个核心函数)
-# ==========================================
-
-# 引擎 A: 计算涨跌幅 (用于动量和反弹)
-@st.cache_data(ttl=3600) 
-def get_momentum_data(asset_dict):
-    tickers = list(asset_dict.values())
-    try:
-        data = yf.download(tickers, period="6mo", progress=False)
-        if 'Close' in data: df_close = data['Close']
-        else: df_close = data
-        
-        results = []
-        for name, code in asset_dict.items():
-            try:
-                series = df_close[code].dropna()
-                if len(series) < 21: continue
-                
-                curr = series.iloc[-1]
-                prev = series.iloc[-21]
-                mom = (curr - prev) / prev * 100
-                
-                results.append({"name": name, "code": code, "price": curr, "value": mom})
-            except: pass
-        return pd.DataFrame(results)
-    except: return pd.DataFrame()
-
-# 引擎 B: 计算均线金叉 (用于双均线策略)
-@st.cache_data(ttl=3600)
-def get_ma_data(asset_dict):
-    tickers = list(asset_dict.values())
-    try:
-        data = yf.download(tickers, period="1y", progress=False)
-        if 'Close' in data: df_close = data['Close']
-        else: df_close = data
+    if st.button
