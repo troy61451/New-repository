@@ -1,0 +1,27 @@
+name: Daily Stock Strategy
+
+on:
+  schedule:
+    # 每天北京时间 15:30 (UTC 07:30)
+    - cron: '30 7 * * *'
+  workflow_dispatch: # 允许手动测试
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install yfinance requests pandas
+
+      - name: Run strategy
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+        run: python daily_run.py
