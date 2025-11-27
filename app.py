@@ -1,9 +1,12 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import akshare as ak  # 🔥 引入 akshare 用于A股新闻
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+from textblob import TextBlob 
+from snownlp import SnowNLP # 🔥 引入 SnowNLP 用于中文情感
 
 # ==========================================
 # 1. 页面配置
@@ -52,8 +55,81 @@ def get_market_temperature():
         return (bull_count / total_count) * 100
     except: return 0
 
+# 🔥 核心升级：双模式新闻引擎
+def get_news_and_sentiment(ticker):
+    analyzed_news = []
+    total_score = 0
+    count = 0
+    
+    # 判断是否为 A股代码 (以 .SS 或 .SZ 结尾)
+    is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
+    
+    try:
+        if is_cn_stock:
+            # === A股模式：使用 Akshare (东方财富源) ===
+            # 去掉后缀，获取纯数字代码 (如 518880)
+            pure_code = ticker.split('.')[0]
+            
+            # 获取个股新闻
+            # Akshare 的 stock_news_em 接口
+            news_df = ak.stock_news_em(symbol=pure_code)
+            
+            # 只取最近的 10 条
+            for index, row in news_df.head(10).iterrows():
+                title = row['新闻标题']
+                pub_time = row['发布时间']
+                link = row['新闻链接']
+                
+                # 中文情感分析 (SnowNLP)
+                s = SnowNLP(title)
+                # SnowNLP 返回 0-1 之间的概率 (0.5是中性)
+                # 我们将其转换为 -1 到 1 的区间，以便和 TextBlob 统一
+                score = (s.sentiments - 0.5) * 2 
+                
+                total_score += score
+                count += 1
+                
+                analyzed_news.append({
+                    "title": title,
+                    "link": link,
+                    "publisher": "东方财富",
+                    "time": pub_time,
+                    "score": score
+                })
+                
+        else:
+            # === 美股/全球模式：使用 Yahoo Finance ===
+            news_list = yf.Ticker(ticker).news
+            for item in news_list:
+                title = item.get('title', '')
+                link = item.get('link', '')
+                publisher = item.get('publisher', 'Unknown')
+                pub_time = datetime.fromtimestamp(item.get('providerPublishTime', 0))
+                
+                # 英文情感分析 (TextBlob)
+                blob = TextBlob(title)
+                score = blob.sentiment.polarity
+                
+                total_score += score
+                count += 1
+                
+                analyzed_news.append({
+                    "title": title,
+                    "link": link,
+                    "publisher": publisher,
+                    "time": pub_time.strftime('%Y-%m-%d %H:%M'),
+                    "score": score
+                })
+                
+        avg_score = total_score / count if count > 0 else 0
+        return analyzed_news, avg_score
+
+    except Exception as e:
+        print(f"News error: {e}")
+        return [], 0
+
 # ==========================================
-# 3. 侧边栏 (🔥 升级：资产管理器)
+# 3. 侧边栏
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
@@ -70,7 +146,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 🔥 1. 添加资产
+    # 资产管理
     with st.expander("➕ 添加自定义行情", expanded=False):
         new_name = st.text_input("资产名称", placeholder="巴西ETF")
         new_code = st.text_input("资产代码", placeholder="EWZ")
@@ -79,41 +155,28 @@ with st.sidebar:
                 st.session_state.custom_assets[new_name] = new_code.strip().upper()
                 st.cache_data.clear()
                 st.rerun()
-
-    # 🔥 2. 删除资产 (新增功能)
+                
     if st.session_state.custom_assets:
-        with st.expander("🗑️ 管理已添加资产", expanded=True):
-            # 显示当前列表
+        with st.expander("🗑️ 管理已添加资产"):
             assets_list = list(st.session_state.custom_assets.keys())
-            # 多选框，让用户勾选要删除的
-            to_delete = st.multiselect("勾选要删除的资产:", assets_list)
-            
+            to_delete = st.multiselect("选择删除:", assets_list)
             if st.button("❌ 删除选中"):
                 if to_delete:
-                    for name in to_delete:
-                        del st.session_state.custom_assets[name]
-                    st.success("删除成功！")
+                    for name in to_delete: del st.session_state.custom_assets[name]
                     st.cache_data.clear()
                     st.rerun()
-                else:
-                    st.warning("请先勾选")
 
     st.markdown("---")
-    
-    # 策略选择
-    strategy_mode = st.radio(
-        "🎯 策略模式:", 
-        ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线(万能)") 
-    )
+    strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
     
     if "自定义" in strategy_mode:
-        st.success("⚙️ 配置策略参数")
+        st.success("⚙️ 配置参数")
         c1, c2 = st.columns(2)
         with c1: custom_short = st.number_input("短期", 1, 100, 5)
         with c2: custom_long = st.number_input("长期", 2, 300, 30)
 
     st.markdown("---")
-    if st.button("🔄 刷新最新数据", type="primary"):
+    if st.button("🔄 刷新数据", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
@@ -289,22 +352,17 @@ def run_backtest(pool_name, start_date, end_date):
 # 6. 页面渲染
 # ==========================================
 st.title("📊 全能操盘手系统")
-tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测", "📰 舆情雷达"])
 
 def render_common(assets, tab_key):
     if "自定义" in strategy_mode:
-        with st.spinner(f"计算 MA{custom_short} vs MA{custom_long} ..."):
-            df = get_custom_ma_data(assets, custom_short, custom_long)
-        asc = False
+        with st.spinner(f"计算 MA{custom_short} vs MA{custom_long} ..."): df = get_custom_ma_data(assets, custom_short, custom_long); asc = False
     elif "双均线" in strategy_mode:
-        with st.spinner("计算均线..."): df = get_ma_data(assets)
-        asc = False
+        with st.spinner("计算均线..."): df = get_ma_data(assets); asc = False
     elif "RSI" in strategy_mode:
-        with st.spinner("计算RSI..."): df = get_rsi_data(assets)
-        asc = True
+        with st.spinner("计算RSI..."): df = get_rsi_data(assets); asc = True
     else:
-        with st.spinner("计算动量..."): df = get_momentum_data(assets)
-        asc = True if "超跌" in strategy_mode else False
+        with st.spinner("计算动量..."): df = get_momentum_data(assets); asc = True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据"); return
     
@@ -318,27 +376,23 @@ def render_common(assets, tab_key):
     
     c1, c2, c3 = st.columns(3)
     if "自定义" in strategy_mode:
-        if target_row['short'] > target_row['long']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
-        else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
-        c2.metric("当前价", f"{target_row['price']:.2f}")
-        c3.metric(f"M{custom_short}/M{custom_long}", f"{target_row['short']:.2f}/{target_row['long']:.2f}")
+        if target_row['short'] > target_row['long']: c1.success(f"🚀 {target_row['name']}"); c1.caption(f"金叉")
+        else: c1.error(f"🛑 {target_row['name']}"); c1.caption(f"死叉")
+        c2.metric("当前价", f"{target_row['price']:.2f}"); c3.metric(f"M{custom_short}/M{custom_long}", f"{target_row['short']:.2f}/{target_row['long']:.2f}")
     elif "双均线" in strategy_mode:
         if target_row['ma20'] > target_row['ma60']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
         else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
-        c2.metric("当前价", f"{target_row['price']:.2f}")
-        c3.metric("强度", f"{target_row['value']:.2f}%")
+        c2.metric("当前价", f"{target_row['price']:.2f}"); c3.metric("强度", f"{target_row['value']:.2f}%")
     elif "RSI" in strategy_mode:
         val = target_row['value']
         if val < 30: c1.success(f"💎 抄底: {target_row['name']}"); c1.caption("超卖")
         elif val > 70: c1.error(f"🔥 风险: {target_row['name']}"); c1.caption("超买")
         else: c1.warning(f"⚖️ {target_row['name']}"); c1.caption("中性")
-        c2.metric("当前价", f"{target_row['price']:.2f}")
-        c3.metric("RSI", f"{val:.2f}")
+        c2.metric("当前价", f"{target_row['price']:.2f}"); c3.metric("RSI", f"{val:.2f}")
     else:
         if target_row['value']<0: c1.error(f"🛑 {target_row['name']}"); c1.caption("趋势向下")
         else: c1.success(f"🚀 {target_row['name']}"); c1.caption("趋势向上")
-        c2.metric("当前价", f"{target_row['price']:.2f}")
-        c3.metric("涨幅", f"{target_row['value']:.2f}%")
+        c2.metric("当前价", f"{target_row['price']:.2f}"); c3.metric("涨幅", f"{target_row['value']:.2f}%")
 
     st.markdown("---")
     st.subheader(f"📈 {target_row['name']} 专业走势")
@@ -373,7 +427,7 @@ def render_500():
 
 def render_backtest():
     st.header("⏳ 策略时光机")
-    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
+    st.info("验证：使用【复权价格】回测，精确处理分红拆股。")
     c1, c2, c3 = st.columns(3)
     pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
     start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
@@ -381,7 +435,45 @@ def render_backtest():
     if st.button("🚀 开始回测", type="primary"):
         run_backtest(pool, start, end)
 
+# 🔥 升级版舆情雷达 (含 A股支持)
+def render_news():
+    st.header("📰 双语舆情雷达")
+    st.info("💡 系统会自动识别：A股代码 → 东方财富(SnowNLP) | 美股/全球 → Yahoo(TextBlob)")
+    
+    all_options = {**ASSETS_GLOBAL, **ASSETS_CN}
+    asset_list = [f"{k} | {v}" for k,v in all_options.items()]
+    selected_asset = st.selectbox("🔍 选择资产:", asset_list)
+    
+    if selected_asset:
+        name = selected_asset.split(" | ")[0]
+        code = selected_asset.split(" | ")[1]
+        
+        if st.button("📡 扫描舆情", type="primary"):
+            with st.spinner(f"正在扫描 {name} ({code}) 的新闻并进行情感计算..."):
+                news_items, avg_score = get_news_and_sentiment(code)
+                
+                if not news_items:
+                    st.warning("⚠️ 暂无相关新闻报道")
+                else:
+                    c1, c2 = st.columns(2)
+                    c1.metric("新闻条数", len(news_items))
+                    emoji = "😐"
+                    if avg_score > 0.1: emoji = "😄 (利好)"
+                    elif avg_score < -0.1: emoji = "😨 (利空)"
+                    c2.metric("情感综合得分", f"{avg_score:.2f}", emoji)
+                    st.markdown("---")
+                    for news in news_items:
+                        color = "gray"
+                        if news['score'] > 0.1: color = "green"
+                        if news['score'] < -0.1: color = "red"
+                        with st.expander(f":{color}[{news['title']}]"):
+                            st.write(f"**时间**: {news['time']}")
+                            st.write(f"**来源**: {news['publisher']}")
+                            st.write(f"**情感**: {news['score']:.2f}")
+                            st.markdown(f"[阅读原文]({news['link']})")
+
 with tab1: render_common(ASSETS_GLOBAL, "global")
 with tab2: render_common(ASSETS_CN, "cn")
 with tab3: render_500()
 with tab4: render_backtest()
+with tab5: render_news()
