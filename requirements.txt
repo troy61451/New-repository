@@ -4,3 +4,4 @@ yfinance
 plotly
 akshare
 requests
+textblob  <-- 新增这个
