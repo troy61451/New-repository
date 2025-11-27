@@ -6,22 +6,41 @@ on:
     - cron: '30 7 * * *'
   workflow_dispatch: # 允许手动测试
 
+# ⚠️ 新增：给这个任务写入仓库的权限
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3  # 升级到 v3
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4 # 升级到 v4
         with:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install yfinance requests pandas
+        # 安装 requirements.txt 里列出的所有库
+        run: pip install -r requirements.txt
 
       - name: Run strategy
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
         run: python daily_run.py
+
+      # ⚠️ 新增：把生成的 CSV 提交回 GitHub 仓库
+      - name: Commit and Push CSV
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          # 检查是否有 csi500_rank.csv 文件生成
+          if [ -f csi500_rank.csv ]; then
+            git add csi500_rank.csv
+            git commit -m "Update CSI500 ranking data" || exit 0
+            git push
+          else
+            echo "No CSV file generated, skipping push."
+          fi
