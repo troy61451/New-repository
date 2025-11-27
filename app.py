@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import akshare as ak  # 🔥 引入 akshare 用于A股新闻
+# import akshare as ak  <-- 删除了这个沉重的库
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from textblob import TextBlob 
-from snownlp import SnowNLP # 🔥 引入 SnowNLP 用于中文情感
+from snownlp import SnowNLP 
 
 # ==========================================
 # 1. 页面配置
@@ -55,50 +55,35 @@ def get_market_temperature():
         return (bull_count / total_count) * 100
     except: return 0
 
-# 🔥 核心升级：双模式新闻引擎
+# 🔥 核心升级：轻量化新闻引擎 (不依赖 Akshare)
 def get_news_and_sentiment(ticker):
     analyzed_news = []
     total_score = 0
     count = 0
     
-    # 判断是否为 A股代码 (以 .SS 或 .SZ 结尾)
+    # 判断是否为 A股/国内ETF (以 .SS 或 .SZ 结尾)
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
     
     try:
         if is_cn_stock:
-            # === A股模式：使用 Akshare (东方财富源) ===
-            # 去掉后缀，获取纯数字代码 (如 518880)
+            # === A股模式：生成直达链接 (最稳定) ===
+            # 云端爬虫不稳定，直接给用户提供传送门是体验最好的
             pure_code = ticker.split('.')[0]
+            market = "SH" if ticker.endswith('.SS') else "SZ"
             
-            # 获取个股新闻
-            # Akshare 的 stock_news_em 接口
-            news_df = ak.stock_news_em(symbol=pure_code)
+            # 生成雪球链接
+            xueqiu_url = f"https://xueqiu.com/S/{market}{pure_code}"
+            # 生成东财链接
+            eastmoney_url = f"http://quote.eastmoney.com/{market.lower()}{pure_code}.html"
             
-            # 只取最近的 10 条
-            for index, row in news_df.head(10).iterrows():
-                title = row['新闻标题']
-                pub_time = row['发布时间']
-                link = row['新闻链接']
-                
-                # 中文情感分析 (SnowNLP)
-                s = SnowNLP(title)
-                # SnowNLP 返回 0-1 之间的概率 (0.5是中性)
-                # 我们将其转换为 -1 到 1 的区间，以便和 TextBlob 统一
-                score = (s.sentiments - 0.5) * 2 
-                
-                total_score += score
-                count += 1
-                
-                analyzed_news.append({
-                    "title": title,
-                    "link": link,
-                    "publisher": "东方财富",
-                    "time": pub_time,
-                    "score": score
-                })
+            return "LINK_MODE", {
+                "xueqiu": xueqiu_url,
+                "eastmoney": eastmoney_url,
+                "code": pure_code
+            }
                 
         else:
-            # === 美股/全球模式：使用 Yahoo Finance ===
+            # === 美股/全球模式：使用 Yahoo Finance (稳定) ===
             news_list = yf.Ticker(ticker).news
             for item in news_list:
                 title = item.get('title', '')
@@ -121,12 +106,12 @@ def get_news_and_sentiment(ticker):
                     "score": score
                 })
                 
-        avg_score = total_score / count if count > 0 else 0
-        return analyzed_news, avg_score
+            avg_score = total_score / count if count > 0 else 0
+            return "NEWS_MODE", (analyzed_news, avg_score)
 
     except Exception as e:
         print(f"News error: {e}")
-        return [], 0
+        return "ERROR", None
 
 # ==========================================
 # 3. 侧边栏
@@ -435,10 +420,10 @@ def render_backtest():
     if st.button("🚀 开始回测", type="primary"):
         run_backtest(pool, start, end)
 
-# 🔥 升级版舆情雷达 (含 A股支持)
+# 🔥 修复版舆情雷达 (直连雪球)
 def render_news():
     st.header("📰 双语舆情雷达")
-    st.info("💡 系统会自动识别：A股代码 → 东方财富(SnowNLP) | 美股/全球 → Yahoo(TextBlob)")
+    st.info("💡 系统会自动识别：A股代码 → 雪球/东财直达 | 美股/全球 → Yahoo AI分析")
     
     all_options = {**ASSETS_GLOBAL, **ASSETS_CN}
     asset_list = [f"{k} | {v}" for k,v in all_options.items()]
@@ -449,11 +434,24 @@ def render_news():
         code = selected_asset.split(" | ")[1]
         
         if st.button("📡 扫描舆情", type="primary"):
-            with st.spinner(f"正在扫描 {name} ({code}) 的新闻并进行情感计算..."):
-                news_items, avg_score = get_news_and_sentiment(code)
+            mode, result = get_news_and_sentiment(code)
+            
+            if mode == "LINK_MODE":
+                # A股模式：显示跳转按钮
+                st.success(f"✅ {name} ({result['code']}) 舆情源已定位")
+                st.markdown("---")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.link_button("❄️ 跳转雪球查看讨论 (推荐)", result['xueqiu'])
+                with c2:
+                    st.link_button("🇨🇳 跳转东方财富新闻", result['eastmoney'])
+                st.info("注：由于A股反爬虫限制，直接跳转到原生App/网页查看是数据最全、速度最快的方式。")
                 
+            elif mode == "NEWS_MODE":
+                # 美股模式：显示分析结果
+                news_items, avg_score = result
                 if not news_items:
-                    st.warning("⚠️ 暂无相关新闻报道")
+                    st.warning("⚠️ Yahoo暂无相关新闻")
                 else:
                     c1, c2 = st.columns(2)
                     c1.metric("新闻条数", len(news_items))
@@ -471,6 +469,8 @@ def render_news():
                             st.write(f"**来源**: {news['publisher']}")
                             st.write(f"**情感**: {news['score']:.2f}")
                             st.markdown(f"[阅读原文]({news['link']})")
+            else:
+                st.error("数据获取失败")
 
 with tab1: render_common(ASSETS_GLOBAL, "global")
 with tab2: render_common(ASSETS_CN, "cn")
