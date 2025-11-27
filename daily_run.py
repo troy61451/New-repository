@@ -1,86 +1,115 @@
+import akshare as ak
 import yfinance as yf
+import pandas as pd
 import requests
 import os
+import time
 
-# =================配置区=================
-# 这里填你刚才复制的 PushPlus Token
-# 但为了安全，我们最好从环境变量读取（后面教你设），或者你现在直接填在这里也行
-# 格式： TOKEN = "你的tokenxxxxxx"
-TOKEN = os.environ.get("PUSH_TOKEN") 
+# 从环境变量获取 Token
+TOKEN = os.environ.get("PUSH_TOKEN")
 
-# A股核心行业池 (和App保持一致)
-ASSETS = {
-    "半导体": "512480.SS", "芯片": "159995.SZ",
-    "光伏": "515790.SS",   "新能车": "515030.SS",
-    "军工": "512660.SS",   "证券": "512880.SS",
-    "白酒": "512690.SS",   "医药": "512010.SS",
-    "纳指": "513100.SS",   "黄金": "518880.SS"
-}
+def get_csi500_list():
+    print("正在获取中证500成分股名单...")
+    try:
+        # 获取中证500 (000905) 的成分股
+        df = ak.index_stock_cons_weight_csindex(symbol="000905")
+        stock_list = []
+        for code in df['成分券代码']:
+            # 转换为 Yahoo 格式: 6开头.SS, 其他.SZ
+            if code.startswith('6'):
+                stock_list.append(code + ".SS")
+            else:
+                stock_list.append(code + ".SZ")
+        print(f"成功获取 {len(stock_list)} 只股票。")
+        return stock_list
+    except Exception as e:
+        print(f"获取名单失败: {e}")
+        return []
 
-def get_signal():
-    print("开始分析...")
-    best_name = "空仓"
-    best_mom = -999
-    msg = ""
+def calculate_momentum():
+    stocks = get_csi500_list()
+    if not stocks: return None, "名单为空"
 
-    # 下载数据
-    tickers = list(ASSETS.values())
-    data = yf.download(tickers, period="30d", progress=False)['Close']
+    print("开始批量下载行情数据 (这可能需要几十秒)...")
+    results = []
     
-    ranking = []
+    # 批量下载，一次性下载所有股票最近1个月的数据
+    # yfinance 会自动处理多线程
+    try:
+        data = yf.download(stocks, period="1mo", progress=False)
+        
+        # 处理数据结构 (兼容不同版本的 yfinance)
+        if 'Close' in data:
+            df_close = data['Close']
+        else:
+            df_close = data
 
-    for name, code in ASSETS.items():
-        try:
-            series = data[code].dropna()
-            if len(series) < 21: continue
-            
-            curr = series.iloc[-1]
-            prev = series.iloc[-21]
-            mom = (curr - prev) / prev * 100
-            
-            ranking.append((name, mom))
-        except:
-            pass
-    
-    # 排序
-    ranking.sort(key=lambda x: x[1], reverse=True)
-    
-    if not ranking:
-        return "数据获取失败", "请检查代码"
+        print("数据下载完成，开始计算排名...")
+        
+        for code in stocks:
+            try:
+                # 提取单只股票
+                if code not in df_close.columns: continue
+                
+                series = df_close[code].dropna()
+                if len(series) < 21: continue
+                
+                curr = series.iloc[-1]     # 最新价
+                prev = series.iloc[-21]    # 20天前价格
+                
+                # 核心指标：20日涨幅
+                mom = (curr - prev) / prev * 100
+                
+                # 增加辅助指标：RSI 或 均线乖离 (这里先只存涨幅，以后可以加)
+                
+                results.append({
+                    "代码": code,
+                    "当前价": round(curr, 2),
+                    "20日涨幅": round(mom, 2)
+                })
+            except:
+                pass
+                
+    except Exception as e:
+        print(f"计算过程出错: {e}")
+        return None, str(e)
 
-    top_name, top_mom = ranking[0]
+    # 生成结果
+    df_res = pd.DataFrame(results)
+    if df_res.empty:
+        return None, "没有计算出有效数据"
     
-    # 构建消息内容
-    title = f"【量化日报】今日建议: {top_name}"
+    # 按涨幅排序，取前 50 名 (这就够了，App不用展示500个)
+    df_top = df_res.sort_values(by="20日涨幅", ascending=False).head(50)
     
-    if top_mom < 0:
-        title = "【量化日报】警告: 建议空仓"
-        body = f"市场最强板块 {top_name} 跌幅 {top_mom:.2f}%，全线下跌，建议持有现金。"
-    else:
-        body = f"🚀 **今日冠军**: {top_name}\n📈 **20日涨幅**: {top_mom:.2f}%\n\n📋 **前三名**:\n"
-        for i in range(min(3, len(ranking))):
-            n, m = ranking[i]
-            body += f"{i+1}. {n}: {m:.2f}%\n"
-            
+    # ⚠️ 保存到本地 CSV 文件
+    df_top.to_csv("csi500_rank.csv", index=False)
+    print("✅ 排名已保存为 csi500_rank.csv")
+    
+    # 准备微信推送文案
+    top_stock = df_top.iloc[0]
+    title = f"【中证500】今日龙一: {top_stock['代码']}"
+    body = f"🚀 **冠军**: {top_stock['代码']}\n📈 **涨幅**: {top_stock['20日涨幅']}%\n💰 **价格**: {top_stock['当前价']}\n\n"
+    body += "Top 5 排名:\n"
+    for i in range(5):
+        row = df_top.iloc[i]
+        body += f"{i+1}. {row['代码']}: {row['20日涨幅']}%\n"
+        
     return title, body
 
 def send_wechat(title, content):
     if not TOKEN:
-        print("没有设置 Token，无法发送")
+        print("无 Token，跳过发送")
         return
-    
-    url = "http://www.pushplus.plus/send"
-    data = {
-        "token": TOKEN,
-        "title": title,
-        "content": content,
-        "template": "markdown"
-    }
-    requests.post(url, json=data)
-    print("消息已推送")
+    try:
+        requests.post("http://www.pushplus.plus/send", json={
+            "token": TOKEN, "title": title, "content": content, "template": "markdown"
+        })
+        print("微信推送成功")
+    except:
+        print("推送失败")
 
 if __name__ == "__main__":
-    t, c = get_signal()
-    print(t)
-    print(c)
-    send_wechat(t, c)
+    t, c = calculate_momentum()
+    if t:
+        send_wechat(t, c)
