@@ -55,7 +55,7 @@ def get_market_temperature():
     except: return 0
 
 # ==========================================
-# 3. 侧边栏
+# 3. 侧边栏 (🔥 修复版：自动大写 + 强制刷新)
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
@@ -74,14 +74,21 @@ with st.sidebar:
     
     # 添加自定义资产
     with st.expander("➕ 添加自定义行情", expanded=False):
-        st.caption("例如: 巴西ETF | 513xxx.SS")
+        st.caption("例如: 巴西ETF | EWZ")
         new_name = st.text_input("资产名称", placeholder="巴西ETF")
-        new_code = st.text_input("资产代码", placeholder="520870.SS")
+        new_code = st.text_input("资产代码", placeholder="EWZ")
         
         if st.button("确认添加"):
             if new_name and new_code:
-                st.session_state.custom_assets[new_name] = new_code
-                st.success(f"已添加: {new_name}")
+                # 🔥 关键修复 1: 自动把代码转成大写并去空格
+                safe_code = new_code.strip().upper()
+                
+                # 保存到 Session
+                st.session_state.custom_assets[new_name] = safe_code
+                st.success(f"已添加: {new_name} ({safe_code})")
+                
+                # 🔥 关键修复 2: 添加新资产后，必须清除缓存，否则看不到新数据
+                st.cache_data.clear()
                 st.rerun()
             else:
                 st.error("请填写名称和代码")
@@ -92,6 +99,7 @@ with st.sidebar:
             st.text(f"{k}: {v}")
         if st.button("🗑️ 清空自定义"):
             st.session_state.custom_assets = {}
+            st.cache_data.clear() # 清空时也要清除缓存
             st.rerun()
 
     st.markdown("---")
@@ -149,6 +157,9 @@ def get_momentum_data(asset_dict):
         res = []
         for n, c in asset_dict.items():
             try:
+                # 🔥 关键：这里 c 必须和 data 的列名完全匹配
+                # Yahoo 下载下来的是 EWZ，如果 c 是 Ewz，就会报错。
+                # 现在的修复版代码已经强制 c 为大写，所以这里就能匹配上了！
                 s = df[c].dropna()
                 if len(s)<21: continue
                 mom = (s.iloc[-1]-s.iloc[-21])/s.iloc[-21]*100
@@ -231,12 +242,11 @@ def run_backtest(pool_name, start_date, end_date):
         except Exception as e: st.error(f"出错: {e}")
 
 # ==========================================
-# 6. 页面渲染 (🔥 修复了 ID 冲突问题)
+# 6. 页面渲染
 # ==========================================
 st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
 
-# ⚠️ 注意这里：增加了一个 tab_key 参数，用来区分不同页面的按钮
 def render_common(assets, tab_key):
     if "双均线" in strategy_mode:
         with st.spinner("计算均线..."): df = get_ma_data(assets)
@@ -266,10 +276,7 @@ def render_common(assets, tab_key):
     st.markdown("---")
     st.subheader("📋 详细排名")
     csv = df.to_csv(index=False).encode('utf-8-sig')
-    
-    # 🔥 修复：给按钮加了 key=f"btn_{tab_key}"
     st.download_button("📥 下载数据 (CSV)", csv, "rank_data.csv", "text/csv", key=f"btn_{tab_key}")
-    
     st.dataframe(df, use_container_width=True)
 
 def render_500():
@@ -304,7 +311,6 @@ def render_backtest():
     if st.button("🚀 开始回测", type="primary"):
         run_backtest(pool, start, end)
 
-# ⚠️ 注意：调用时传入了 "global" 和 "cn" 作为身份ID
 with tab1: render_common(ASSETS_GLOBAL, "global")
 with tab2: render_common(ASSETS_CN, "cn")
 with tab3: render_500()
