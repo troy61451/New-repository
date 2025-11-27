@@ -55,7 +55,7 @@ def get_market_temperature():
     except: return 0
 
 # ==========================================
-# 3. 侧边栏 (🔥 修复版：自动大写 + 强制刷新)
+# 3. 侧边栏
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
@@ -80,14 +80,9 @@ with st.sidebar:
         
         if st.button("确认添加"):
             if new_name and new_code:
-                # 🔥 关键修复 1: 自动把代码转成大写并去空格
                 safe_code = new_code.strip().upper()
-                
-                # 保存到 Session
                 st.session_state.custom_assets[new_name] = safe_code
-                st.success(f"已添加: {new_name} ({safe_code})")
-                
-                # 🔥 关键修复 2: 添加新资产后，必须清除缓存，否则看不到新数据
+                st.success(f"已添加: {new_name}")
                 st.cache_data.clear()
                 st.rerun()
             else:
@@ -99,7 +94,7 @@ with st.sidebar:
             st.text(f"{k}: {v}")
         if st.button("🗑️ 清空自定义"):
             st.session_state.custom_assets = {}
-            st.cache_data.clear() # 清空时也要清除缓存
+            st.cache_data.clear()
             st.rerun()
 
     st.markdown("---")
@@ -157,9 +152,6 @@ def get_momentum_data(asset_dict):
         res = []
         for n, c in asset_dict.items():
             try:
-                # 🔥 关键：这里 c 必须和 data 的列名完全匹配
-                # Yahoo 下载下来的是 EWZ，如果 c 是 Ewz，就会报错。
-                # 现在的修复版代码已经强制 c 为大写，所以这里就能匹配上了！
                 s = df[c].dropna()
                 if len(s)<21: continue
                 mom = (s.iloc[-1]-s.iloc[-21])/s.iloc[-21]*100
@@ -242,37 +234,62 @@ def run_backtest(pool_name, start_date, end_date):
         except Exception as e: st.error(f"出错: {e}")
 
 # ==========================================
-# 6. 页面渲染
+# 6. 页面渲染 (🔥 新增：下拉选择框)
 # ==========================================
 st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
 
 def render_common(assets, tab_key):
+    # 1. 获取数据
     if "双均线" in strategy_mode:
         with st.spinner("计算均线..."): df = get_ma_data(assets)
     else:
         with st.spinner("计算动量..."): df = get_momentum_data(assets)
     if df.empty: st.warning("暂无数据"); return
     
+    # 2. 排序
     asc = True if "超跌" in strategy_mode else False
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
-    df.index+=1
-    top = df.iloc[0]
-
-    c1,c2,c3 = st.columns(3)
-    if "双均线" in strategy_mode:
-        if top['ma20']>top['ma60']: c1.success(f"🚀 {top['name']}"); c1.caption("金叉")
-        else: c1.error("🛑 空仓"); c1.caption("死叉")
-    elif "超跌" in strategy_mode: c1.success(f"🛡️ 抄底: {top['name']}")
-    else:
-        if top['value']<0: c1.error("🛑 空仓"); c1.caption("普跌")
-        else: c1.success(f"🚀 买入: {top['name']}")
-    c2.metric("价格", f"{top['price']:.2f}")
-    c3.metric("强度", f"{top['value']:.2f}%")
-    st.markdown("---")
-    st.subheader(f"📈 {top['name']} 专业走势")
-    plot_pro_chart(top['code'], top['name'])
+    df.index += 1 # 排名从1开始
     
+    # 3. 🔥 交互升级：添加选择框 (默认选择第1名)
+    # 构造选项列表: "1. 黄金ETF | 518880.SS"
+    select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
+    selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
+    
+    # 解析用户的选择
+    selected_index = select_options.index(selected_option) # 获取选中了第几个
+    target_row = df.iloc[selected_index] # 提取那一行的数据
+    
+    # 4. 展示选中资产的数据 (不再只展示 Top 1)
+    c1, c2, c3 = st.columns(3)
+    if "双均线" in strategy_mode:
+        if target_row['ma20'] > target_row['ma60']: 
+            c1.success(f"🚀 {target_row['name']}")
+            c1.caption("金叉 (持有)")
+        else: 
+            c1.error(f"🛑 {target_row['name']}")
+            c1.caption("死叉 (观望)")
+    elif "超跌" in strategy_mode: 
+        c1.success(f"🛡️ {target_row['name']}")
+    else:
+        if target_row['value'] < 0: 
+            c1.error(f"🛑 {target_row['name']}")
+            c1.caption("趋势向下")
+        else: 
+            c1.success(f"🚀 {target_row['name']}")
+            c1.caption("趋势向上")
+            
+    c2.metric("当前价格", f"{target_row['price']:.2f}")
+    c3.metric("强度/涨幅", f"{target_row['value']:.2f}%")
+    
+    st.markdown("---")
+    
+    # 5. 画选中资产的图
+    st.subheader(f"📈 {target_row['name']} 专业走势")
+    plot_pro_chart(target_row['code'], target_row['name'])
+    
+    # 6. 表格
     st.markdown("---")
     st.subheader("📋 详细排名")
     csv = df.to_csv(index=False).encode('utf-8-sig')
