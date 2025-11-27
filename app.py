@@ -10,8 +10,12 @@ from datetime import datetime, timedelta
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
-# 资产池
-ASSETS_GLOBAL = {
+# 初始化 Session State (用于存储用户手动添加的资产)
+if 'custom_assets' not in st.session_state:
+    st.session_state.custom_assets = {}
+
+# 默认资产池
+DEFAULT_ASSETS_GLOBAL = {
     "纳指ETF(美成长)": "513100.SS", "标普500(美大盘)": "513500.SS",
     "日经ETF(日本)": "513520.SS", "德国ETF(欧洲)": "513030.SS",
     "黄金ETF(避险)": "518880.SS", "红利ETF(防守)": "510880.SS",
@@ -27,64 +31,79 @@ ASSETS_CN = {
     "有色ETF": "512400.SS",   "传媒ETF": "512980.SS"
 }
 
+# 动态合并：默认资产 + 用户自定义资产
+ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
+
 # ==========================================
-# 2. 辅助功能函数 (新增)
+# 2. 辅助功能函数
 # ==========================================
-# 🔥 市场温度计：计算A股行业有多少处于多头排列(价格>MA20)
 @st.cache_data(ttl=3600)
 def get_market_temperature():
     tickers = list(ASSETS_CN.values())
     try:
         data = yf.download(tickers, period="30d", progress=False)['Close']
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-        
         bull_count = 0
         total_count = len(tickers)
-        
         for code in tickers:
             try:
                 s = data[code].dropna()
                 if len(s) < 20: continue
-                price = s.iloc[-1]
-                ma20 = s.rolling(20).mean().iloc[-1]
-                if price > ma20:
-                    bull_count += 1
+                if s.iloc[-1] > s.rolling(20).mean().iloc[-1]: bull_count += 1
             except: pass
-            
-        score = (bull_count / total_count) * 100
-        return score
+        return (bull_count / total_count) * 100
     except: return 0
 
 # ==========================================
-# 3. 侧边栏 (升级版)
+# 3. 侧边栏 (新增添加功能)
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
     st.caption(f"📅 日期: {datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("---")
     
-    # 🔥 新增：市场温度计
+    # 温度计
     temp = get_market_temperature()
     st.subheader("🌡️ A股情绪温度")
     st.progress(temp / 100)
-    if temp > 80:
-        st.error(f"🔥 过热 ({temp:.0f}%) - 注意回调")
-    elif temp < 20:
-        st.info(f"🧊 冰点 ({temp:.0f}%) - 否极泰来")
-    else:
-        st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
-        
+    if temp > 80: st.error(f"🔥 过热 ({temp:.0f}%)")
+    elif temp < 20: st.info(f"🧊 冰点 ({temp:.0f}%)")
+    else: st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
+    
     st.markdown("---")
     
+    # 🔥 新增功能：添加自定义资产
+    with st.expander("➕ 添加自定义行情", expanded=False):
+        st.caption("例如: 巴西ETF | 513xxx.SS")
+        new_name = st.text_input("资产名称", placeholder="巴西ETF")
+        new_code = st.text_input("资产代码", placeholder="520870.SS")
+        
+        if st.button("确认添加"):
+            if new_name and new_code:
+                st.session_state.custom_assets[new_name] = new_code
+                st.success(f"已添加: {new_name}")
+                st.rerun() # 立即刷新页面
+            else:
+                st.error("请填写名称和代码")
+                
+    # 显示已添加列表
+    if st.session_state.custom_assets:
+        st.caption("✅ 已添加:")
+        for k, v in st.session_state.custom_assets.items():
+            st.text(f"{k}: {v}")
+        if st.button("🗑️ 清空自定义"):
+            st.session_state.custom_assets = {}
+            st.rerun()
+
+    st.markdown("---")
     strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉"))
-    
     st.markdown("---")
     if st.button("🔄 刷新最新数据", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 4. 核心绘图 & 数据函数 (保持稳定)
+# 4. 核心绘图 & 数据函数
 # ==========================================
 def plot_pro_chart(ticker, name):
     try:
@@ -168,10 +187,15 @@ def load_csi500_rank():
 # 5. 回测引擎 (复权+修正)
 # ==========================================
 def run_backtest(pool_name, start_date, end_date):
-    assets = ASSETS_GLOBAL if pool_name == "全球宏观" else ASSETS_CN
+    # 这里需要包含用户自定义的资产
+    if pool_name == "全球宏观":
+        assets = ASSETS_GLOBAL 
+    else:
+        assets = ASSETS_CN
+        
     tickers = list(assets.values())
     
-    with st.spinner(f"正在回测 {pool_name} ..."):
+    with st.spinner(f"正在回测 {pool_name} ({len(tickers)}只)..."):
         try:
             data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)['Close']
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
@@ -245,7 +269,6 @@ def render_common(assets):
     
     st.markdown("---")
     st.subheader("📋 详细排名")
-    # 🔥 新增：下载按钮
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 下载数据 (CSV)", csv, "rank_data.csv", "text/csv")
     st.dataframe(df, use_container_width=True)
@@ -268,7 +291,6 @@ def render_500():
         st.subheader(f"📈 {name} 专业走势")
         plot_pro_chart(code, name)
     st.markdown("---")
-    # 🔥 新增：下载按钮
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 下载排名 (CSV)", csv, "csi500_rank.csv", "text/csv")
     st.dataframe(df, use_container_width=True)
