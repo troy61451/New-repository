@@ -98,7 +98,13 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉"))
+    
+    # 🔥 修改点 1：在菜单里增加新策略的名字
+    strategy_mode = st.radio(
+        "🎯 策略模式:", 
+        ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡(新)") 
+    )
+    
     st.markdown("---")
     if st.button("🔄 刷新最新数据", type="primary"):
         st.cache_data.clear()
@@ -180,6 +186,32 @@ def get_ma_data(asset_dict):
         return pd.DataFrame(res)
     except: return pd.DataFrame()
 
+# 🔥 修改点 2：增加 RSI 策略的计算函数 (独立模块，不影响别人)
+@st.cache_data(ttl=3600)
+def get_rsi_data(asset_dict):
+    tickers = list(asset_dict.values())
+    try:
+        data = yf.download(tickers, period="6mo", progress=False)
+        if 'Close' in data: df = data['Close']
+        else: df = data
+        res = []
+        for n, c in asset_dict.items():
+            try:
+                s = df[c].dropna()
+                if len(s)<20: continue
+                # 计算 RSI
+                delta = s.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                rsi = 100 - (100 / (1 + rs))
+                current_rsi = rsi.iloc[-1]
+                
+                res.append({"name":n, "code":c, "price":s.iloc[-1], "value":current_rsi})
+            except: pass
+        return pd.DataFrame(res)
+    except: return pd.DataFrame()
+
 @st.cache_data
 def load_csi500_rank():
     try: return pd.read_csv("csi500_rank.csv")
@@ -234,62 +266,67 @@ def run_backtest(pool_name, start_date, end_date):
         except Exception as e: st.error(f"出错: {e}")
 
 # ==========================================
-# 6. 页面渲染 (🔥 新增：下拉选择框)
+# 6. 页面渲染
 # ==========================================
 st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
 
 def render_common(assets, tab_key):
-    # 1. 获取数据
+    # 🔥 修改点 3：页面渲染时，根据选择调用不同的计算函数
     if "双均线" in strategy_mode:
         with st.spinner("计算均线..."): df = get_ma_data(assets)
+        asc = False
+    elif "RSI" in strategy_mode:
+        with st.spinner("计算RSI..."): df = get_rsi_data(assets)
+        asc = True # RSI 越小越好(抄底)，所以升序排列
     else:
         with st.spinner("计算动量..."): df = get_momentum_data(assets)
+        asc = True if "超跌" in strategy_mode else False
+
     if df.empty: st.warning("暂无数据"); return
     
-    # 2. 排序
-    asc = True if "超跌" in strategy_mode else False
+    # 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
-    df.index += 1 # 排名从1开始
+    df.index += 1
     
-    # 3. 🔥 交互升级：添加选择框 (默认选择第1名)
-    # 构造选项列表: "1. 黄金ETF | 518880.SS"
+    # 下拉选择
     select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
     selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
+    selected_index = select_options.index(selected_option)
+    target_row = df.iloc[selected_index]
     
-    # 解析用户的选择
-    selected_index = select_options.index(selected_option) # 获取选中了第几个
-    target_row = df.iloc[selected_index] # 提取那一行的数据
-    
-    # 4. 展示选中资产的数据 (不再只展示 Top 1)
+    # 展示信号 (🔥 针对 RSI 增加显示逻辑)
     c1, c2, c3 = st.columns(3)
+    
     if "双均线" in strategy_mode:
-        if target_row['ma20'] > target_row['ma60']: 
-            c1.success(f"🚀 {target_row['name']}")
-            c1.caption("金叉 (持有)")
-        else: 
-            c1.error(f"🛑 {target_row['name']}")
-            c1.caption("死叉 (观望)")
+        if target_row['ma20'] > target_row['ma60']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
+        else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
+        
+    elif "RSI" in strategy_mode:
+        rsi_val = target_row['value']
+        if rsi_val < 30: 
+            c1.success(f"💎 捡钱机会: {target_row['name']}")
+            c1.caption("RSI超卖 (<30)")
+        elif rsi_val > 70:
+            c1.error(f"🔥 风险预警: {target_row['name']}")
+            c1.caption("RSI超买 (>70)")
+        else:
+            c1.warning(f"⚖️ 观望: {target_row['name']}")
+            c1.caption("RSI中性")
+            
     elif "超跌" in strategy_mode: 
         c1.success(f"🛡️ {target_row['name']}")
     else:
-        if target_row['value'] < 0: 
-            c1.error(f"🛑 {target_row['name']}")
-            c1.caption("趋势向下")
-        else: 
-            c1.success(f"🚀 {target_row['name']}")
-            c1.caption("趋势向上")
+        if target_row['value'] < 0: c1.error(f"🛑 {target_row['name']}"); c1.caption("趋势向下")
+        else: c1.success(f"🚀 {target_row['name']}"); c1.caption("趋势向上")
             
     c2.metric("当前价格", f"{target_row['price']:.2f}")
-    c3.metric("强度/涨幅", f"{target_row['value']:.2f}%")
+    c3.metric("指标数值", f"{target_row['value']:.2f}")
     
     st.markdown("---")
-    
-    # 5. 画选中资产的图
     st.subheader(f"📈 {target_row['name']} 专业走势")
     plot_pro_chart(target_row['code'], target_row['name'])
     
-    # 6. 表格
     st.markdown("---")
     st.subheader("📋 详细排名")
     csv = df.to_csv(index=False).encode('utf-8-sig')
