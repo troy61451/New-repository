@@ -121,42 +121,63 @@ def load_csi500_rank():
     except: return pd.DataFrame()
 
 # ==========================================
-# 4. 回测引擎 (🔥 auto_adjust=True 终极修正版)
+# 4. 回测引擎 (✅ 完美修复版)
 # ==========================================
 def run_backtest(pool_name, start_date, end_date):
     assets = ASSETS_GLOBAL if pool_name == "全球宏观" else ASSETS_CN
     tickers = list(assets.values())
     
-    with st.spinner(f"正在下载历史数据(复权修正)..."):
+    with st.spinner(f"正在下载 {len(tickers)} 只资产数据(auto_adjust=True)..."):
         try:
-            # 🔥 核心修正：
-            # 1. auto_adjust=True: 强制 Yahoo 返回复权后的价格
-            # 2. 读取 ['Close']: 因为开启了自动复权，Close里就是复权价了
+            # 1. 强制使用复权数据
             data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)['Close']
             
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             
-            # 前向填充
-            data = data.ffill().dropna()
+            # 2. 清洗数据：前向填充，去0
+            data = data.replace(0, pd.NA).ffill().dropna(how='all')
 
             if data.empty:
-                st.error("数据为空，请检查日期或网络")
+                st.error("数据为空，请检查日期范围")
                 return
             
-            # 收益率 & 动量计算
+            # 3. 计算收益率
             daily_ret = data.pct_change().fillna(0)
+            
+            # 4. 计算动量 (排除初始NaN)
             momentum = data.pct_change(20).shift(1)
             
             strategy_ret = []
             dates = []
+            current_hold = "建仓中..."
             
             for date, row in daily_ret.iterrows():
+                # 安全阀：如果今天动量数据还没算出来(NaN)，直接跳过(空仓)
                 if date not in momentum.index: continue
-                best_code = momentum.loc[date].idxmax()
+                
+                mom_row = momentum.loc[date]
+                
+                # 安全阀：如果整行都是NaN(前20天)，跳过
+                if mom_row.isna().all(): continue
+                
+                # 选最强
+                best_code = mom_row.idxmax()
+                
+                # 安全阀：再次确认找到的不是NaN
+                if pd.isna(best_code): continue
+                
+                current_hold = best_code
+                
+                # 计算当日收益
                 day_pnl = row[best_code]
                 strategy_ret.append(day_pnl)
                 dates.append(date)
             
+            if not strategy_ret:
+                st.warning("区间太短，不足以计算20日动量，请拉长回测时间。")
+                return
+
+            # 5. 净值曲线
             equity = [1.0]
             for r in strategy_ret:
                 equity.append(equity[-1] * (1 + r))
@@ -164,8 +185,10 @@ def run_backtest(pool_name, start_date, end_date):
             backtest_df = pd.DataFrame({"日期": dates, "策略净值": equity[1:]}).set_index("日期")
             total_ret = (equity[-1] - 1) * 100
             
-            st.success(f"✅ 回测完成！(已复权)")
-            st.metric("策略总收益", f"{total_ret:.2f}%")
+            st.success(f"✅ 回测完成！")
+            c1, c2 = st.columns(2)
+            c1.metric("策略总收益", f"{total_ret:.2f}%")
+            c2.metric("最新持仓", f"{current_hold}")
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df["策略净值"], mode='lines', name='账户净值', line=dict(color='#fd3030', width=2)))
