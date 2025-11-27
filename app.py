@@ -35,9 +35,9 @@ with st.sidebar:
     st.title("🎛️ 策略控制台")
     st.markdown("---")
     
-    # 策略选择器
+    # 策略选择器 (只对前两个Tab有效)
     strategy_mode = st.radio(
-        "🎯 请选择策略模式:",
+        "🎯 实时计算模式:",
         (
             "🚀 动量轮动 (谁涨买谁)", 
             "🛡️ 超跌反弹 (谁跌买谁)",
@@ -46,17 +46,16 @@ with st.sidebar:
     )
     
     st.info(f"当前模式：**{strategy_mode}**")
+    st.caption("注：'中证500'页面使用独立数据源(后台每日更新)")
     
-    # --- 注意：之前报错就是这里少了冒号 ---
     if st.button("🔄 强制刷新数据"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 3. 数据计算引擎
+# 3. 数据计算引擎 (实时)
 # ==========================================
 
-# 引擎 A: 计算涨跌幅
 @st.cache_data(ttl=3600) 
 def get_momentum_data(asset_dict):
     tickers = list(asset_dict.values())
@@ -64,23 +63,18 @@ def get_momentum_data(asset_dict):
         data = yf.download(tickers, period="6mo", progress=False)
         if 'Close' in data: df_close = data['Close']
         else: df_close = data
-        
         results = []
         for name, code in asset_dict.items():
             try:
                 series = df_close[code].dropna()
                 if len(series) < 21: continue
-                
                 curr = series.iloc[-1]
-                prev = series.iloc[-21]
-                mom = (curr - prev) / prev * 100
-                
+                mom = (curr - series.iloc[-21]) / series.iloc[-21] * 100
                 results.append({"name": name, "code": code, "price": curr, "value": mom})
             except: pass
         return pd.DataFrame(results)
     except: return pd.DataFrame()
 
-# 引擎 B: 计算均线金叉
 @st.cache_data(ttl=3600)
 def get_ma_data(asset_dict):
     tickers = list(asset_dict.values())
@@ -88,107 +82,130 @@ def get_ma_data(asset_dict):
         data = yf.download(tickers, period="1y", progress=False)
         if 'Close' in data: df_close = data['Close']
         else: df_close = data
-        
         results = []
         for name, code in asset_dict.items():
             try:
                 series = df_close[code].dropna()
                 if len(series) < 61: continue
-                
                 curr = series.iloc[-1]
                 ma20 = series.rolling(20).mean().iloc[-1]
                 ma60 = series.rolling(60).mean().iloc[-1]
                 gap = (ma20 - ma60) / ma60 * 100
-                
-                results.append({
-                    "name": name, "code": code, "price": curr, 
-                    "ma20": ma20, "ma60": ma60, "value": gap
-                })
+                results.append({"name": name, "code": code, "price": curr, "ma20": ma20, "ma60": ma60, "value": gap})
             except: pass
         return pd.DataFrame(results)
     except: return pd.DataFrame()
 
 # ==========================================
-# 4. 页面渲染逻辑
+# 4. 新增：读取中证500 CSV
 # ==========================================
-st.title(f"📊 量化决策系统 - {strategy_mode.split(' ')[1]}")
+@st.cache_data
+def load_csi500_rank():
+    try:
+        # 直接读取 GitHub Actions 生成的文件
+        # 注意：这里读取的是 GitHub 仓库里的相对路径文件
+        df = pd.read_csv("csi500_rank.csv")
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-tab1, tab2 = st.tabs(["🌍 全球宏观", "🇨🇳 A股行业"])
+# ==========================================
+# 5. 页面渲染逻辑
+# ==========================================
+st.title(f"📊 量化决策系统")
 
-def render_page(asset_dict, title):
+# 创建三个标签页
+tab1, tab2, tab3 = st.tabs(["🌍 全球宏观", "🇨🇳 A股行业", "🔥 中证500龙头"])
+
+# --- 渲染通用页面 (Tab 1 & 2) ---
+def render_page(asset_dict):
     if "双均线" in strategy_mode:
-        with st.spinner('正在计算 MA20/MA60 均线关系...'):
+        with st.spinner('正在计算均线...'):
             df = get_ma_data(asset_dict)
     else:
-        with st.spinner('正在分析 20日 资金流向...'):
+        with st.spinner('正在计算动量...'):
             df = get_momentum_data(asset_dict)
     
     if df.empty:
-        st.warning("暂无数据，请稍后刷新")
+        st.warning("暂无数据")
         return
 
-    # 排序
     is_ascending = True if "超跌" in strategy_mode else False
     df = df.sort_values(by="value", ascending=is_ascending).reset_index(drop=True)
     df.index += 1
-    
     top = df.iloc[0]
     
-    # 信号区
     c1, c2, c3 = st.columns(3)
-    
     if "双均线" in strategy_mode:
-        if top['ma20'] > top['ma60']:
-            c1.success(f"🚀 建议持有: {top['name']}")
-            c1.caption("金叉 (MA20 > MA60)")
-        else:
-            c1.error("🛑 建议空仓")
-            c1.caption("全市场均为死叉")
-        c2.metric("MA20", f"{top['ma20']:.2f}")
-        c3.metric("MA60", f"{top['ma60']:.2f}", delta=f"开口 {top['value']:.2f}%")
-        
+        if top['ma20'] > top['ma60']: c1.success(f"🚀 {top['name']}"); c1.caption("金叉")
+        else: c1.error("🛑 空仓"); c1.caption("死叉")
+        c2.metric("MA20", f"{top['ma20']:.2f}"); c3.metric("MA60", f"{top['ma60']:.2f}")
     elif "超跌" in strategy_mode:
-        c1.success(f"🛡️ 建议抄底: {top['name']}")
-        c1.caption(f"跌幅最深 ({top['value']:.2f}%)")
-        c2.metric("当前价格", f"{top['price']:.3f}")
-        c3.metric("超跌幅度", f"{top['value']:.2f}%")
-        
+        c1.success(f"🛡️ 抄底: {top['name']}"); c2.metric("价格", f"{top['price']:.2f}"); c3.metric("跌幅", f"{top['value']:.2f}%")
     else:
-        if top['value'] < 0:
-            c1.error("🛑 建议空仓 (Cash)")
-            c1.caption("市场普跌")
-        else:
-            c1.success(f"🚀 建议买入: {top['name']}")
-            c1.caption("领涨抗跌")
-        c2.metric("当前价格", f"{top['price']:.3f}")
-        c3.metric("动量强度", f"{top['value']:.2f}%")
+        if top['value']<0: c1.error("🛑 空仓"); c1.caption("普跌")
+        else: c1.success(f"🚀 买入: {top['name']}")
+        c2.metric("价格", f"{top['price']:.2f}"); c3.metric("涨幅", f"{top['value']:.2f}%")
 
     st.markdown("---")
-    
-    # 画图
-    st.subheader(f"📈 {top['name']} 趋势验证")
+    st.subheader(f"📈 {top['name']} 走势")
     try:
         k_df = yf.download(top['code'], period="1y", progress=False)
         if isinstance(k_df.columns, pd.MultiIndex): k_df.columns = k_df.columns.get_level_values(0)
-        
         k_df['MA20'] = k_df['Close'].rolling(20).mean()
-        k_df['MA60'] = k_df['Close'].rolling(60).mean()
-        
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=k_df.index, open=k_df['Open'], high=k_df['High'], low=k_df['Low'], close=k_df['Close'], name='K线'))
-        fig.add_trace(go.Scatter(x=k_df.index, y=k_df['MA20'], mode='lines', name='MA20', line=dict(color='#f1c40f', width=1.5)))
-        fig.add_trace(go.Scatter(x=k_df.index, y=k_df['MA60'], mode='lines', name='MA60', line=dict(color='#3498db', width=1.5)))
-        
-        fig.update_layout(height=450, xaxis_rangeslider_visible=False, title=top['name'])
+        fig = go.Figure(data=[go.Candlestick(x=k_df.index, open=k_df['Open'], high=k_df['High'], low=k_df['Low'], close=k_df['Close'], name='K线')])
+        fig.add_trace(go.Scatter(x=k_df.index, y=k_df['MA20'], mode='lines', line=dict(color='orange', width=1)))
+        fig.update_layout(height=400, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
-    except:
-        st.error("K线数据加载失败")
-
-    # 表格
-    st.subheader("📋 详细排名表")
+    except: pass
     st.dataframe(df, use_container_width=True)
 
+# --- 渲染中证500页面 (Tab 3) ---
+def render_csi500():
+    df = load_csi500_rank()
+    
+    if df.empty:
+        st.info("💡 后台正在努力计算中... (每天下午更新)")
+        st.warning("暂未找到 ranking 文件，请确保 GitHub Action 运行成功。")
+        return
+
+    # 1. 冠军展示
+    top = df.iloc[0]
+    st.success(f"🚀 今日中证500 冠军: **{top['代码']}**")
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("20日涨幅", f"{top['20日涨幅']}%", "领跑全场")
+    col2.metric("当前价格", f"¥{top['当前价']}")
+    col3.metric("数据时间", "每日收盘后更新")
+    
+    st.markdown("---")
+    
+    # 2. 交互式 K线查看器
+    st.subheader("🔍 龙头股 K线透视")
+    # 让用户选择想看哪只股票（默认选第一名）
+    selected_code = st.selectbox("选择股票查看详情:", df['代码'].head(20).tolist())
+    
+    if selected_code:
+        with st.spinner(f"正在加载 {selected_code} K线..."):
+            try:
+                k_df = yf.download(selected_code, period="6mo", progress=False)
+                if isinstance(k_df.columns, pd.MultiIndex): k_df.columns = k_df.columns.get_level_values(0)
+                
+                fig = go.Figure(data=[go.Candlestick(x=k_df.index, open=k_df['Open'], high=k_df['High'], low=k_df['Low'], close=k_df['Close'])])
+                fig.update_layout(height=450, title=f"{selected_code} 日线图", xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"K线加载失败: {e}")
+
+    # 3. 完整表格
+    st.markdown("---")
+    st.subheader("📋 Top 50 强势股名单")
+    st.dataframe(df, use_container_width=True)
+
+# 渲染所有标签页
 with tab1:
-    render_page(ASSETS_GLOBAL, "全球资产")
+    render_page(ASSETS_GLOBAL)
 with tab2:
-    render_page(ASSETS_CN, "A股行业")
+    render_page(ASSETS_CN)
+with tab3:
+    render_csi500()
