@@ -73,7 +73,7 @@ def plot_pro_chart(ticker, name):
             shared_xaxes=True, 
             vertical_spacing=0.02, 
             row_heights=[0.6, 0.2, 0.2], # 高度比例
-            subplot_titles=(f"{name} ({ticker})", "", "") # 只显示顶部标题
+            subplot_titles=(f"{name} ({ticker})", "", "")
         )
 
         # --- 第一栏：K线 + 均线 ---
@@ -83,7 +83,7 @@ def plot_pro_chart(ticker, name):
             name="K线", increasing_line_color='#fd3030', decreasing_line_color='#00f0f0'
         ), row=1, col=1)
         
-        # 均线 (MA5白, MA10黄, MA20紫)
+        # 均线
         fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='white', width=1), name='MA5'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['MA10'], line=dict(color='#ffd700', width=1), name='MA10'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#ff00ff', width=1), name='MA20'), row=1, col=1)
@@ -95,29 +95,26 @@ def plot_pro_chart(ticker, name):
         ), row=2, col=1)
 
         # --- 第三栏：MACD ---
-        # 柱状图 (红绿柱)
         macd_colors = ['#fd3030' if val >= 0 else '#00f0f0' for val in df['MACD']]
         fig.add_trace(go.Bar(
             x=df.index, y=df['MACD'], marker_color=macd_colors, name='MACD柱', showlegend=False
         ), row=3, col=1)
-        # DIF线 (白)
         fig.add_trace(go.Scatter(x=df.index, y=df['DIF'], line=dict(color='white', width=1), name='DIF'), row=3, col=1)
-        # DEA线 (黄)
         fig.add_trace(go.Scatter(x=df.index, y=df['DEA'], line=dict(color='#ffd700', width=1), name='DEA'), row=3, col=1)
 
-        # --- 4. 深度美化 (关键步骤) ---
+        # --- 4. 深度美化 ---
         fig.update_layout(
-            template='plotly_dark', # 暗黑模式
-            height=700,             # 总高度增加
+            template='plotly_dark',
+            height=700,
             xaxis_rangeslider_visible=False,
-            paper_bgcolor='#000000', # 纯黑背景
-            plot_bgcolor='#0e0e0e',  # 绘图区深灰
+            paper_bgcolor='#000000',
+            plot_bgcolor='#0e0e0e',
             margin=dict(l=5, r=5, t=30, b=5),
-            hovermode='x unified',   # 十字光标效果
+            hovermode='x unified',
             legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0)
         )
         
-        # 增加时间切换按钮 (1月, 3月, 6月, 1年)
+        # 时间切换按钮
         fig.update_xaxes(
             rangeselector=dict(
                 buttons=list([
@@ -132,8 +129,117 @@ def plot_pro_chart(ticker, name):
             row=1, col=1
         )
 
-        # 隐藏子图的Y轴刻度线，让画面更干净
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#222')
-        fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])]) # 隐藏周末
+        fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])])
 
-        st.plotly_chart(fig, use_container
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"图表加载出错: {e}")
+
+# ==========================================
+# 4. 数据逻辑
+# ==========================================
+@st.cache_data(ttl=3600) 
+def get_momentum_data(asset_dict):
+    tickers = list(asset_dict.values())
+    try:
+        data = yf.download(tickers, period="6mo", progress=False)
+        if 'Close' in data: df = data['Close']
+        else: df = data
+        res = []
+        for n, c in asset_dict.items():
+            try:
+                s = df[c].dropna()
+                if len(s)<21: continue
+                mom = (s.iloc[-1]-s.iloc[-21])/s.iloc[-21]*100
+                res.append({"name":n, "code":c, "price":s.iloc[-1], "value":mom})
+            except: pass
+        return pd.DataFrame(res)
+    except: return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_ma_data(asset_dict):
+    tickers = list(asset_dict.values())
+    try:
+        data = yf.download(tickers, period="1y", progress=False)
+        if 'Close' in data: df = data['Close']
+        else: df = data
+        res = []
+        for n, c in asset_dict.items():
+            try:
+                s = df[c].dropna()
+                if len(s)<61: continue
+                m20 = s.rolling(20).mean().iloc[-1]
+                m60 = s.rolling(60).mean().iloc[-1]
+                gap = (m20-m60)/m60*100
+                res.append({"name":n, "code":c, "price":s.iloc[-1], "ma20":m20, "ma60":m60, "value":gap})
+            except: pass
+        return pd.DataFrame(res)
+    except: return pd.DataFrame()
+
+@st.cache_data
+def load_csi500_rank():
+    try: return pd.read_csv("csi500_rank.csv")
+    except: return pd.DataFrame()
+
+# ==========================================
+# 5. 渲染页面
+# ==========================================
+st.title("📊 全能操盘手系统")
+tab1, tab2, tab3 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500"])
+
+def render_common(assets):
+    if "双均线" in strategy_mode:
+        with st.spinner("计算均线..."): df = get_ma_data(assets)
+    else:
+        with st.spinner("计算动量..."): df = get_momentum_data(assets)
+    
+    if df.empty: st.warning("暂无数据"); return
+    
+    asc = True if "超跌" in strategy_mode else False
+    df = df.sort_values("value", ascending=asc).reset_index(drop=True)
+    df.index+=1
+    top = df.iloc[0]
+
+    c1,c2,c3 = st.columns(3)
+    if "双均线" in strategy_mode:
+        if top['ma20']>top['ma60']: c1.success(f"🚀 {top['name']}"); c1.caption("金叉")
+        else: c1.error("🛑 空仓"); c1.caption("死叉")
+    elif "超跌" in strategy_mode: c1.success(f"🛡️ 抄底: {top['name']}")
+    else:
+        if top['value']<0: c1.error("🛑 空仓"); c1.caption("普跌")
+        else: c1.success(f"🚀 买入: {top['name']}")
+    c2.metric("价格", f"{top['price']:.2f}")
+    c3.metric("强度", f"{top['value']:.2f}%")
+    
+    st.markdown("---")
+    st.subheader(f"📈 {top['name']} 专业走势")
+    plot_pro_chart(top['code'], top['name'])
+    st.dataframe(df, use_container_width=True)
+
+def render_500():
+    df = load_csi500_rank()
+    if df.empty: st.warning("后台生成中..."); return
+    top = df.iloc[0]
+    st.success(f"🚀 冠军: **{top['名称']}** ({top['代码']})")
+    c1,c2,c3 = st.columns(3)
+    c1.metric("20日涨幅", f"{top['20日涨幅']}%")
+    c2.metric("当前价", f"¥{top['当前价']}")
+    c3.metric("来源", "后台优选")
+    
+    st.markdown("---")
+    opts = [f"{r['代码']} | {r['名称']}" for i,r in df.head(20).iterrows()]
+    sel = st.selectbox("选择股票:", opts)
+    if sel:
+        code = sel.split(" | ")[0]
+        name = sel.split(" | ")[1]
+        st.subheader(f"📈 {name} 专业走势")
+        plot_pro_chart(code, name)
+    
+    st.markdown("---")
+    st.dataframe(df, use_container_width=True)
+
+with tab1: render_common(ASSETS_GLOBAL)
+with tab2: render_common(ASSETS_CN)
+with tab3: render_500()
