@@ -2,6 +2,6 @@ streamlit
 pandas
 yfinance
 plotly
-akshare
 requests
-textblob  <-- 新增这个
+textblob
+snownlp
