@@ -28,19 +28,63 @@ ASSETS_CN = {
 }
 
 # ==========================================
-# 2. 侧边栏
+# 2. 辅助功能函数 (新增)
+# ==========================================
+# 🔥 市场温度计：计算A股行业有多少处于多头排列(价格>MA20)
+@st.cache_data(ttl=3600)
+def get_market_temperature():
+    tickers = list(ASSETS_CN.values())
+    try:
+        data = yf.download(tickers, period="30d", progress=False)['Close']
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        
+        bull_count = 0
+        total_count = len(tickers)
+        
+        for code in tickers:
+            try:
+                s = data[code].dropna()
+                if len(s) < 20: continue
+                price = s.iloc[-1]
+                ma20 = s.rolling(20).mean().iloc[-1]
+                if price > ma20:
+                    bull_count += 1
+            except: pass
+            
+        score = (bull_count / total_count) * 100
+        return score
+    except: return 0
+
+# ==========================================
+# 3. 侧边栏 (升级版)
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
+    st.caption(f"📅 日期: {datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("---")
-    strategy_mode = st.radio("🎯 实时模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉"))
+    
+    # 🔥 新增：市场温度计
+    temp = get_market_temperature()
+    st.subheader("🌡️ A股情绪温度")
+    st.progress(temp / 100)
+    if temp > 80:
+        st.error(f"🔥 过热 ({temp:.0f}%) - 注意回调")
+    elif temp < 20:
+        st.info(f"🧊 冰点 ({temp:.0f}%) - 否极泰来")
+    else:
+        st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
+        
     st.markdown("---")
-    if st.button("🔄 刷新数据"):
+    
+    strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉"))
+    
+    st.markdown("---")
+    if st.button("🔄 刷新最新数据", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 3. 核心绘图 & 数据函数
+# 4. 核心绘图 & 数据函数 (保持稳定)
 # ==========================================
 def plot_pro_chart(ticker, name):
     try:
@@ -121,85 +165,54 @@ def load_csi500_rank():
     except: return pd.DataFrame()
 
 # ==========================================
-# 4. 回测引擎 (✅ 完美修复版)
+# 5. 回测引擎 (复权+修正)
 # ==========================================
 def run_backtest(pool_name, start_date, end_date):
     assets = ASSETS_GLOBAL if pool_name == "全球宏观" else ASSETS_CN
     tickers = list(assets.values())
     
-    with st.spinner(f"正在下载 {len(tickers)} 只资产数据(auto_adjust=True)..."):
+    with st.spinner(f"正在回测 {pool_name} ..."):
         try:
-            # 1. 强制使用复权数据
             data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)['Close']
-            
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-            
-            # 2. 清洗数据：前向填充，去0
             data = data.replace(0, pd.NA).ffill().dropna(how='all')
-
-            if data.empty:
-                st.error("数据为空，请检查日期范围")
-                return
+            if data.empty: st.error("数据不足"); return
             
-            # 3. 计算收益率
             daily_ret = data.pct_change().fillna(0)
-            
-            # 4. 计算动量 (排除初始NaN)
             momentum = data.pct_change(20).shift(1)
             
             strategy_ret = []
             dates = []
-            current_hold = "建仓中..."
             
             for date, row in daily_ret.iterrows():
-                # 安全阀：如果今天动量数据还没算出来(NaN)，直接跳过(空仓)
                 if date not in momentum.index: continue
-                
                 mom_row = momentum.loc[date]
-                
-                # 安全阀：如果整行都是NaN(前20天)，跳过
                 if mom_row.isna().all(): continue
-                
-                # 选最强
                 best_code = mom_row.idxmax()
-                
-                # 安全阀：再次确认找到的不是NaN
                 if pd.isna(best_code): continue
-                
-                current_hold = best_code
-                
-                # 计算当日收益
-                day_pnl = row[best_code]
-                strategy_ret.append(day_pnl)
+                strategy_ret.append(row[best_code])
                 dates.append(date)
             
-            if not strategy_ret:
-                st.warning("区间太短，不足以计算20日动量，请拉长回测时间。")
-                return
+            if not strategy_ret: st.warning("区间太短"); return
 
-            # 5. 净值曲线
             equity = [1.0]
-            for r in strategy_ret:
-                equity.append(equity[-1] * (1 + r))
+            for r in strategy_ret: equity.append(equity[-1] * (1 + r))
             
             backtest_df = pd.DataFrame({"日期": dates, "策略净值": equity[1:]}).set_index("日期")
             total_ret = (equity[-1] - 1) * 100
             
-            st.success(f"✅ 回测完成！")
-            c1, c2 = st.columns(2)
-            c1.metric("策略总收益", f"{total_ret:.2f}%")
-            c2.metric("最新持仓", f"{current_hold}")
+            st.success(f"✅ 回测完成")
+            st.metric("策略总收益", f"{total_ret:.2f}%")
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df["策略净值"], mode='lines', name='账户净值', line=dict(color='#fd3030', width=2)))
-            fig.update_layout(template='plotly_dark', title="资金曲线 (Equity Curve)", height=450)
+            fig.update_layout(template='plotly_dark', title="资金曲线", height=450)
             st.plotly_chart(fig, use_container_width=True)
             
-        except Exception as e:
-            st.error(f"回测出错: {e}")
+        except Exception as e: st.error(f"出错: {e}")
 
 # ==========================================
-# 5. 页面渲染
+# 6. 页面渲染
 # ==========================================
 st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
@@ -229,6 +242,12 @@ def render_common(assets):
     st.markdown("---")
     st.subheader(f"📈 {top['name']} 专业走势")
     plot_pro_chart(top['code'], top['name'])
+    
+    st.markdown("---")
+    st.subheader("📋 详细排名")
+    # 🔥 新增：下载按钮
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载数据 (CSV)", csv, "rank_data.csv", "text/csv")
     st.dataframe(df, use_container_width=True)
 
 def render_500():
@@ -249,6 +268,9 @@ def render_500():
         st.subheader(f"📈 {name} 专业走势")
         plot_pro_chart(code, name)
     st.markdown("---")
+    # 🔥 新增：下载按钮
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载排名 (CSV)", csv, "csi500_rank.csv", "text/csv")
     st.dataframe(df, use_container_width=True)
 
 def render_backtest():
