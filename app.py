@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
-# 初始化 Session State
 if 'custom_assets' not in st.session_state:
     st.session_state.custom_assets = {}
 
@@ -31,11 +30,10 @@ ASSETS_CN = {
     "有色ETF": "512400.SS",   "传媒ETF": "512980.SS"
 }
 
-# 动态合并
 ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 
 # ==========================================
-# 2. 辅助功能函数
+# 2. 辅助函数
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_market_temperature():
@@ -55,16 +53,16 @@ def get_market_temperature():
     except: return 0
 
 # ==========================================
-# 3. 侧边栏
+# 3. 侧边栏 (🔥 升级：自定义策略参数)
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
-    st.caption(f"📅 日期: {datetime.now().strftime('%Y-%m-%d')}")
+    st.caption(f"📅 {datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("---")
     
     # 温度计
     temp = get_market_temperature()
-    st.subheader("🌡️ A股情绪温度")
+    st.subheader("🌡️ 市场温度")
     st.progress(temp / 100)
     if temp > 80: st.error(f"🔥 过热 ({temp:.0f}%)")
     elif temp < 20: st.info(f"🧊 冰点 ({temp:.0f}%)")
@@ -72,21 +70,15 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 添加自定义资产
+    # 添加行情
     with st.expander("➕ 添加自定义行情", expanded=False):
-        st.caption("例如: 巴西ETF | EWZ")
         new_name = st.text_input("资产名称", placeholder="巴西ETF")
         new_code = st.text_input("资产代码", placeholder="EWZ")
-        
         if st.button("确认添加"):
             if new_name and new_code:
-                safe_code = new_code.strip().upper()
-                st.session_state.custom_assets[new_name] = safe_code
-                st.success(f"已添加: {new_name}")
+                st.session_state.custom_assets[new_name] = new_code.strip().upper()
                 st.cache_data.clear()
                 st.rerun()
-            else:
-                st.error("请填写名称和代码")
                 
     if st.session_state.custom_assets:
         st.caption("✅ 已添加:")
@@ -99,29 +91,48 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # 🔥 修改点 1：在菜单里增加新策略的名字
+    # 🔥 策略选择
     strategy_mode = st.radio(
         "🎯 策略模式:", 
-        ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡(新)") 
+        ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线(万能)") 
     )
     
+    # 🔥 只有选中“自定义均线”时，才显示参数输入框
+    custom_short = 5
+    custom_long = 20
+    
+    if "自定义" in strategy_mode:
+        st.success("⚙️ 配置你的策略参数")
+        col1, col2 = st.columns(2)
+        with col1:
+            custom_short = st.number_input("短期均线", min_value=1, value=5, step=1)
+        with col2:
+            custom_long = st.number_input("长期均线", min_value=2, value=30, step=1)
+        st.caption(f"当前逻辑: MA{custom_short} 金叉 MA{custom_long} 买入")
+
     st.markdown("---")
     if st.button("🔄 刷新最新数据", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 4. 核心绘图 & 数据函数
+# 4. 数据计算引擎
 # ==========================================
 def plot_pro_chart(ticker, name):
     try:
         df = yf.download(ticker, period="2y", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
+        # 计算基础均线
         df['MA5'] = df['Close'].rolling(5).mean()
-        df['MA10'] = df['Close'].rolling(10).mean()
         df['MA20'] = df['Close'].rolling(20).mean()
         
+        # 🔥 如果是自定义模式，画出用户定义的均线
+        if "自定义" in strategy_mode:
+            df[f'MA{custom_short}'] = df['Close'].rolling(custom_short).mean()
+            df[f'MA{custom_long}'] = df['Close'].rolling(custom_long).mean()
+
+        # MACD
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
         df['DIF'] = ema12 - ema26
@@ -130,9 +141,14 @@ def plot_pro_chart(ticker, name):
 
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.6, 0.2, 0.2], subplot_titles=(f"{name} ({ticker})", "", ""))
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K线", increasing_line_color='#fd3030', decreasing_line_color='#00f0f0'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='white', width=1), name='MA5'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA10'], line=dict(color='#ffd700', width=1), name='MA10'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#ff00ff', width=1), name='MA20'), row=1, col=1)
+        
+        # 动态画均线
+        if "自定义" in strategy_mode:
+            fig.add_trace(go.Scatter(x=df.index, y=df[f'MA{custom_short}'], line=dict(color='yellow', width=1.5), name=f'MA{custom_short}'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df[f'MA{custom_long}'], line=dict(color='cyan', width=1.5), name=f'MA{custom_long}'), row=1, col=1)
+        else:
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='white', width=1), name='MA5'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='#ff00ff', width=1), name='MA20'), row=1, col=1)
         
         vol_colors = ['#fd3030' if r['Open'] < r['Close'] else '#00f0f0' for i, r in df.iterrows()]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量', showlegend=False), row=2, col=1)
@@ -186,7 +202,6 @@ def get_ma_data(asset_dict):
         return pd.DataFrame(res)
     except: return pd.DataFrame()
 
-# 🔥 修改点 2：增加 RSI 策略的计算函数 (独立模块，不影响别人)
 @st.cache_data(ttl=3600)
 def get_rsi_data(asset_dict):
     tickers = list(asset_dict.values())
@@ -199,15 +214,37 @@ def get_rsi_data(asset_dict):
             try:
                 s = df[c].dropna()
                 if len(s)<20: continue
-                # 计算 RSI
                 delta = s.diff()
                 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
                 rs = gain / loss
                 rsi = 100 - (100 / (1 + rs))
-                current_rsi = rsi.iloc[-1]
+                res.append({"name":n, "code":c, "price":s.iloc[-1], "value":rsi.iloc[-1]})
+            except: pass
+        return pd.DataFrame(res)
+    except: return pd.DataFrame()
+
+# 🔥 新增：万能均线计算函数 (接收动态参数)
+@st.cache_data(ttl=3600)
+def get_custom_ma_data(asset_dict, short_w, long_w):
+    tickers = list(asset_dict.values())
+    try:
+        # 下载足够长的数据
+        data = yf.download(tickers, period="2y", progress=False)
+        if 'Close' in data: df = data['Close']
+        else: df = data
+        res = []
+        for n, c in asset_dict.items():
+            try:
+                s = df[c].dropna()
+                if len(s) < long_w + 1: continue # 数据长度不够
                 
-                res.append({"name":n, "code":c, "price":s.iloc[-1], "value":current_rsi})
+                ms = s.rolling(short_w).mean().iloc[-1]
+                ml = s.rolling(long_w).mean().iloc[-1]
+                
+                # 开口越大越好
+                gap = (ms - ml) / ml * 100
+                res.append({"name":n, "code":c, "price":s.iloc[-1], "short":ms, "long":ml, "value":gap})
             except: pass
         return pd.DataFrame(res)
     except: return pd.DataFrame()
@@ -224,20 +261,16 @@ def run_backtest(pool_name, start_date, end_date):
     if pool_name == "全球宏观": assets = ASSETS_GLOBAL 
     else: assets = ASSETS_CN
     tickers = list(assets.values())
-    
     with st.spinner(f"正在回测 {pool_name} ({len(tickers)}只)..."):
         try:
             data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)['Close']
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data = data.replace(0, pd.NA).ffill().dropna(how='all')
             if data.empty: st.error("数据不足"); return
-            
             daily_ret = data.pct_change().fillna(0)
             momentum = data.pct_change(20).shift(1)
-            
             strategy_ret = []
             dates = []
-            
             for date, row in daily_ret.iterrows():
                 if date not in momentum.index: continue
                 mom_row = momentum.loc[date]
@@ -246,23 +279,17 @@ def run_backtest(pool_name, start_date, end_date):
                 if pd.isna(best_code): continue
                 strategy_ret.append(row[best_code])
                 dates.append(date)
-            
             if not strategy_ret: st.warning("区间太短"); return
-
             equity = [1.0]
             for r in strategy_ret: equity.append(equity[-1] * (1 + r))
-            
             backtest_df = pd.DataFrame({"日期": dates, "策略净值": equity[1:]}).set_index("日期")
             total_ret = (equity[-1] - 1) * 100
-            
             st.success(f"✅ 回测完成")
             st.metric("策略总收益", f"{total_ret:.2f}%")
-            
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df["策略净值"], mode='lines', name='账户净值', line=dict(color='#fd3030', width=2)))
             fig.update_layout(template='plotly_dark', title="资金曲线", height=450)
             st.plotly_chart(fig, use_container_width=True)
-            
         except Exception as e: st.error(f"出错: {e}")
 
 # ==========================================
@@ -272,61 +299,66 @@ st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
 
 def render_common(assets, tab_key):
-    # 🔥 修改点 3：页面渲染时，根据选择调用不同的计算函数
-    if "双均线" in strategy_mode:
+    # 🔥 策略路由：根据选择调用不同函数
+    if "自定义" in strategy_mode:
+        with st.spinner(f"计算 MA{custom_short} vs MA{custom_long} ..."):
+            df = get_custom_ma_data(assets, custom_short, custom_long)
+        asc = False
+    elif "双均线" in strategy_mode:
         with st.spinner("计算均线..."): df = get_ma_data(assets)
         asc = False
     elif "RSI" in strategy_mode:
         with st.spinner("计算RSI..."): df = get_rsi_data(assets)
-        asc = True # RSI 越小越好(抄底)，所以升序排列
+        asc = True
     else:
         with st.spinner("计算动量..."): df = get_momentum_data(assets)
         asc = True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据"); return
     
-    # 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     df.index += 1
     
-    # 下拉选择
     select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
     selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
     selected_index = select_options.index(selected_option)
     target_row = df.iloc[selected_index]
     
-    # 展示信号 (🔥 针对 RSI 增加显示逻辑)
     c1, c2, c3 = st.columns(3)
     
-    if "双均线" in strategy_mode:
+    # 🔥 渲染逻辑
+    if "自定义" in strategy_mode:
+        if target_row['short'] > target_row['long']:
+            c1.success(f"🚀 {target_row['name']}")
+            c1.caption(f"金叉 (MA{custom_short} > MA{custom_long})")
+        else:
+            c1.error(f"🛑 {target_row['name']}")
+            c1.caption(f"死叉 (MA{custom_short} < MA{custom_long})")
+        c2.metric("当前价格", f"{target_row['price']:.2f}")
+        c3.metric(f"MA{custom_short} / MA{custom_long}", f"{target_row['short']:.2f} / {target_row['long']:.2f}")
+
+    elif "双均线" in strategy_mode:
         if target_row['ma20'] > target_row['ma60']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
         else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
+        c2.metric("当前价格", f"{target_row['price']:.2f}")
+        c3.metric("强度", f"{target_row['value']:.2f}%")
         
     elif "RSI" in strategy_mode:
-        rsi_val = target_row['value']
-        if rsi_val < 30: 
-            c1.success(f"💎 捡钱机会: {target_row['name']}")
-            c1.caption("RSI超卖 (<30)")
-        elif rsi_val > 70:
-            c1.error(f"🔥 风险预警: {target_row['name']}")
-            c1.caption("RSI超买 (>70)")
-        else:
-            c1.warning(f"⚖️ 观望: {target_row['name']}")
-            c1.caption("RSI中性")
-            
-    elif "超跌" in strategy_mode: 
-        c1.success(f"🛡️ {target_row['name']}")
+        val = target_row['value']
+        if val < 30: c1.success(f"💎 抄底: {target_row['name']}"); c1.caption("RSI超卖")
+        elif val > 70: c1.error(f"🔥 风险: {target_row['name']}"); c1.caption("RSI超买")
+        else: c1.warning(f"⚖️ {target_row['name']}"); c1.caption("RSI中性")
+        c2.metric("当前价格", f"{target_row['price']:.2f}")
+        c3.metric("RSI数值", f"{val:.2f}")
     else:
-        if target_row['value'] < 0: c1.error(f"🛑 {target_row['name']}"); c1.caption("趋势向下")
+        if target_row['value']<0: c1.error(f"🛑 {target_row['name']}"); c1.caption("趋势向下")
         else: c1.success(f"🚀 {target_row['name']}"); c1.caption("趋势向上")
-            
-    c2.metric("当前价格", f"{target_row['price']:.2f}")
-    c3.metric("指标数值", f"{target_row['value']:.2f}")
-    
+        c2.metric("当前价格", f"{target_row['price']:.2f}")
+        c3.metric("强度/涨幅", f"{target_row['value']:.2f}%")
+
     st.markdown("---")
     st.subheader(f"📈 {target_row['name']} 专业走势")
     plot_pro_chart(target_row['code'], target_row['name'])
-    
     st.markdown("---")
     st.subheader("📋 详细排名")
     csv = df.to_csv(index=False).encode('utf-8-sig')
