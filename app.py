@@ -53,7 +53,7 @@ def get_market_temperature():
     except: return 0
 
 # ==========================================
-# 3. 侧边栏 (🔥 升级：自定义策略参数)
+# 3. 侧边栏 (🔥 升级：资产管理器)
 # ==========================================
 with st.sidebar:
     st.title("🎛️ 操盘控制台")
@@ -70,7 +70,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 添加行情
+    # 🔥 1. 添加资产
     with st.expander("➕ 添加自定义行情", expanded=False):
         new_name = st.text_input("资产名称", placeholder="巴西ETF")
         new_code = st.text_input("资产代码", placeholder="EWZ")
@@ -79,36 +79,38 @@ with st.sidebar:
                 st.session_state.custom_assets[new_name] = new_code.strip().upper()
                 st.cache_data.clear()
                 st.rerun()
-                
+
+    # 🔥 2. 删除资产 (新增功能)
     if st.session_state.custom_assets:
-        st.caption("✅ 已添加:")
-        for k, v in st.session_state.custom_assets.items():
-            st.text(f"{k}: {v}")
-        if st.button("🗑️ 清空自定义"):
-            st.session_state.custom_assets = {}
-            st.cache_data.clear()
-            st.rerun()
+        with st.expander("🗑️ 管理已添加资产", expanded=True):
+            # 显示当前列表
+            assets_list = list(st.session_state.custom_assets.keys())
+            # 多选框，让用户勾选要删除的
+            to_delete = st.multiselect("勾选要删除的资产:", assets_list)
+            
+            if st.button("❌ 删除选中"):
+                if to_delete:
+                    for name in to_delete:
+                        del st.session_state.custom_assets[name]
+                    st.success("删除成功！")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.warning("请先勾选")
 
     st.markdown("---")
     
-    # 🔥 策略选择
+    # 策略选择
     strategy_mode = st.radio(
         "🎯 策略模式:", 
         ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线(万能)") 
     )
     
-    # 🔥 只有选中“自定义均线”时，才显示参数输入框
-    custom_short = 5
-    custom_long = 20
-    
     if "自定义" in strategy_mode:
-        st.success("⚙️ 配置你的策略参数")
-        col1, col2 = st.columns(2)
-        with col1:
-            custom_short = st.number_input("短期均线", min_value=1, value=5, step=1)
-        with col2:
-            custom_long = st.number_input("长期均线", min_value=2, value=30, step=1)
-        st.caption(f"当前逻辑: MA{custom_short} 金叉 MA{custom_long} 买入")
+        st.success("⚙️ 配置策略参数")
+        c1, c2 = st.columns(2)
+        with c1: custom_short = st.number_input("短期", 1, 100, 5)
+        with c2: custom_long = st.number_input("长期", 2, 300, 30)
 
     st.markdown("---")
     if st.button("🔄 刷新最新数据", type="primary"):
@@ -123,16 +125,13 @@ def plot_pro_chart(ticker, name):
         df = yf.download(ticker, period="2y", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # 计算基础均线
         df['MA5'] = df['Close'].rolling(5).mean()
         df['MA20'] = df['Close'].rolling(20).mean()
         
-        # 🔥 如果是自定义模式，画出用户定义的均线
         if "自定义" in strategy_mode:
             df[f'MA{custom_short}'] = df['Close'].rolling(custom_short).mean()
             df[f'MA{custom_long}'] = df['Close'].rolling(custom_long).mean()
 
-        # MACD
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
         df['DIF'] = ema12 - ema26
@@ -142,7 +141,6 @@ def plot_pro_chart(ticker, name):
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.6, 0.2, 0.2], subplot_titles=(f"{name} ({ticker})", "", ""))
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K线", increasing_line_color='#fd3030', decreasing_line_color='#00f0f0'), row=1, col=1)
         
-        # 动态画均线
         if "自定义" in strategy_mode:
             fig.add_trace(go.Scatter(x=df.index, y=df[f'MA{custom_short}'], line=dict(color='yellow', width=1.5), name=f'MA{custom_short}'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df[f'MA{custom_long}'], line=dict(color='cyan', width=1.5), name=f'MA{custom_long}'), row=1, col=1)
@@ -224,12 +222,10 @@ def get_rsi_data(asset_dict):
         return pd.DataFrame(res)
     except: return pd.DataFrame()
 
-# 🔥 新增：万能均线计算函数 (接收动态参数)
 @st.cache_data(ttl=3600)
 def get_custom_ma_data(asset_dict, short_w, long_w):
     tickers = list(asset_dict.values())
     try:
-        # 下载足够长的数据
         data = yf.download(tickers, period="2y", progress=False)
         if 'Close' in data: df = data['Close']
         else: df = data
@@ -237,12 +233,9 @@ def get_custom_ma_data(asset_dict, short_w, long_w):
         for n, c in asset_dict.items():
             try:
                 s = df[c].dropna()
-                if len(s) < long_w + 1: continue # 数据长度不够
-                
+                if len(s) < long_w + 1: continue
                 ms = s.rolling(short_w).mean().iloc[-1]
                 ml = s.rolling(long_w).mean().iloc[-1]
-                
-                # 开口越大越好
                 gap = (ms - ml) / ml * 100
                 res.append({"name":n, "code":c, "price":s.iloc[-1], "short":ms, "long":ml, "value":gap})
             except: pass
@@ -299,7 +292,6 @@ st.title("📊 全能操盘手系统")
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测"])
 
 def render_common(assets, tab_key):
-    # 🔥 策略路由：根据选择调用不同函数
     if "自定义" in strategy_mode:
         with st.spinner(f"计算 MA{custom_short} vs MA{custom_long} ..."):
             df = get_custom_ma_data(assets, custom_short, custom_long)
@@ -325,36 +317,28 @@ def render_common(assets, tab_key):
     target_row = df.iloc[selected_index]
     
     c1, c2, c3 = st.columns(3)
-    
-    # 🔥 渲染逻辑
     if "自定义" in strategy_mode:
-        if target_row['short'] > target_row['long']:
-            c1.success(f"🚀 {target_row['name']}")
-            c1.caption(f"金叉 (MA{custom_short} > MA{custom_long})")
-        else:
-            c1.error(f"🛑 {target_row['name']}")
-            c1.caption(f"死叉 (MA{custom_short} < MA{custom_long})")
-        c2.metric("当前价格", f"{target_row['price']:.2f}")
-        c3.metric(f"MA{custom_short} / MA{custom_long}", f"{target_row['short']:.2f} / {target_row['long']:.2f}")
-
+        if target_row['short'] > target_row['long']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
+        else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
+        c2.metric("当前价", f"{target_row['price']:.2f}")
+        c3.metric(f"M{custom_short}/M{custom_long}", f"{target_row['short']:.2f}/{target_row['long']:.2f}")
     elif "双均线" in strategy_mode:
         if target_row['ma20'] > target_row['ma60']: c1.success(f"🚀 {target_row['name']}"); c1.caption("金叉")
         else: c1.error(f"🛑 {target_row['name']}"); c1.caption("死叉")
-        c2.metric("当前价格", f"{target_row['price']:.2f}")
+        c2.metric("当前价", f"{target_row['price']:.2f}")
         c3.metric("强度", f"{target_row['value']:.2f}%")
-        
     elif "RSI" in strategy_mode:
         val = target_row['value']
-        if val < 30: c1.success(f"💎 抄底: {target_row['name']}"); c1.caption("RSI超卖")
-        elif val > 70: c1.error(f"🔥 风险: {target_row['name']}"); c1.caption("RSI超买")
-        else: c1.warning(f"⚖️ {target_row['name']}"); c1.caption("RSI中性")
-        c2.metric("当前价格", f"{target_row['price']:.2f}")
-        c3.metric("RSI数值", f"{val:.2f}")
+        if val < 30: c1.success(f"💎 抄底: {target_row['name']}"); c1.caption("超卖")
+        elif val > 70: c1.error(f"🔥 风险: {target_row['name']}"); c1.caption("超买")
+        else: c1.warning(f"⚖️ {target_row['name']}"); c1.caption("中性")
+        c2.metric("当前价", f"{target_row['price']:.2f}")
+        c3.metric("RSI", f"{val:.2f}")
     else:
         if target_row['value']<0: c1.error(f"🛑 {target_row['name']}"); c1.caption("趋势向下")
         else: c1.success(f"🚀 {target_row['name']}"); c1.caption("趋势向上")
-        c2.metric("当前价格", f"{target_row['price']:.2f}")
-        c3.metric("强度/涨幅", f"{target_row['value']:.2f}%")
+        c2.metric("当前价", f"{target_row['price']:.2f}")
+        c3.metric("涨幅", f"{target_row['value']:.2f}%")
 
     st.markdown("---")
     st.subheader(f"📈 {target_row['name']} 专业走势")
