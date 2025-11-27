@@ -44,7 +44,6 @@ with st.sidebar:
 # ==========================================
 def plot_pro_chart(ticker, name):
     try:
-        # 画图还是用不复权的价格，因为要看当天的真实价格
         df = yf.download(ticker, period="2y", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
@@ -122,30 +121,30 @@ def load_csi500_rank():
     except: return pd.DataFrame()
 
 # ==========================================
-# 4. 回测引擎 (🔥 复权修正版)
+# 4. 回测引擎 (🔥 auto_adjust=True 终极修正版)
 # ==========================================
 def run_backtest(pool_name, start_date, end_date):
     assets = ASSETS_GLOBAL if pool_name == "全球宏观" else ASSETS_CN
     tickers = list(assets.values())
     
-    with st.spinner(f"正在下载 {len(tickers)} 只资产历史数据(复权后)..."):
+    with st.spinner(f"正在下载历史数据(复权修正)..."):
         try:
-            # 🔥 关键修改：下载 'Adj Close' (复权收盘价)
-            data = yf.download(tickers, start=start_date, end=end_date, progress=False)['Adj Close']
+            # 🔥 核心修正：
+            # 1. auto_adjust=True: 强制 Yahoo 返回复权后的价格
+            # 2. 读取 ['Close']: 因为开启了自动复权，Close里就是复权价了
+            data = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, progress=False)['Close']
             
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             
-            # 数据清洗：前向填充处理停牌/节假日
+            # 前向填充
             data = data.ffill().dropna()
 
             if data.empty:
-                st.error("数据下载为空，请检查日期范围")
+                st.error("数据为空，请检查日期或网络")
                 return
             
-            # 计算收益率 (使用复权价)
+            # 收益率 & 动量计算
             daily_ret = data.pct_change().fillna(0)
-            
-            # 计算排名 (使用复权价计算动量)
             momentum = data.pct_change(20).shift(1)
             
             strategy_ret = []
@@ -153,17 +152,11 @@ def run_backtest(pool_name, start_date, end_date):
             
             for date, row in daily_ret.iterrows():
                 if date not in momentum.index: continue
-                
-                # 选最强
                 best_code = momentum.loc[date].idxmax()
-                
-                # 计算当日收益
                 day_pnl = row[best_code]
-                
                 strategy_ret.append(day_pnl)
                 dates.append(date)
             
-            # 净值
             equity = [1.0]
             for r in strategy_ret:
                 equity.append(equity[-1] * (1 + r))
@@ -171,9 +164,8 @@ def run_backtest(pool_name, start_date, end_date):
             backtest_df = pd.DataFrame({"日期": dates, "策略净值": equity[1:]}).set_index("日期")
             total_ret = (equity[-1] - 1) * 100
             
-            st.success(f"✅ 回测完成！(已使用复权数据)")
-            c1, c2 = st.columns(2)
-            c1.metric("策略总收益", f"{total_ret:.2f}%")
+            st.success(f"✅ 回测完成！(已复权)")
+            st.metric("策略总收益", f"{total_ret:.2f}%")
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=backtest_df.index, y=backtest_df["策略净值"], mode='lines', name='账户净值', line=dict(color='#fd3030', width=2)))
@@ -238,7 +230,7 @@ def render_500():
 
 def render_backtest():
     st.header("⏳ 策略时光机")
-    st.info("验证：使用【复权价格】回测，精准还原分红与拆股后的真实收益。")
+    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
     c1, c2, c3 = st.columns(3)
     pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
     start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
