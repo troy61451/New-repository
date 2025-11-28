@@ -10,14 +10,14 @@ from textblob import TextBlob
 from snownlp import SnowNLP 
 
 # ==========================================
-# 1. 页面配置
+# 1. 基础配置 & 资产池
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
 if 'custom_assets' not in st.session_state:
     st.session_state.custom_assets = {}
 
-# 默认资产池
+# 默认资产
 DEFAULT_ASSETS_GLOBAL = {
     "纳指ETF(美成长)": "513100.SS", "标普500(美大盘)": "513500.SS",
     "日经ETF(日本)": "513520.SS", "德国ETF(欧洲)": "513030.SS",
@@ -33,12 +33,13 @@ ASSETS_CN = {
     "家电ETF": "159996.SZ",   "煤炭ETF": "515220.SS",
     "有色ETF": "512400.SS",   "传媒ETF": "512980.SS"
 }
-
 ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 
 # ==========================================
-# 2. 辅助函数
+# 2. 所有功能函数定义 (必须放在最前面!)
 # ==========================================
+
+# --- 辅助函数 ---
 @st.cache_data(ttl=3600)
 def get_market_temperature():
     tickers = list(ASSETS_CN.values())
@@ -60,7 +61,6 @@ def get_market_temperature():
         return (bull_count / total_count) * 100
     except: return 50
 
-# Google News RSS 解析引擎
 def get_google_news(query, lang='zh-CN'):
     rss_url = f"https://news.google.com/rss/search?q={query}&hl={lang}&gl=CN&ceid=CN:{lang}"
     try:
@@ -81,14 +81,12 @@ def get_google_news(query, lang='zh-CN'):
                     blob = TextBlob(title)
                     score = blob.sentiment.polarity
             except: score = 0
-            
             total_score += score
             count += 1
             try:
                 dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
                 time_str = dt.strftime('%m-%d %H:%M')
             except: time_str = pub_date
-
             news_items.append({"title": title, "link": link, "time": time_str, "score": score, "source": "Google News"})
         avg_score = total_score / count if count > 0 else 0
         return news_items, avg_score
@@ -96,10 +94,8 @@ def get_google_news(query, lang='zh-CN'):
         print(f"Google RSS Error: {e}")
         return [], 0
 
-# 新闻引擎 (🔥 修复财联社404，新增同花顺)
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
-    
     if is_cn_stock:
         search_term = name.split('(')[0] 
         news_items, avg = get_google_news(search_term, 'zh-CN')
@@ -127,73 +123,18 @@ def get_news_and_sentiment(ticker, name):
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
-        market = "SH" if ticker.endswith('.SS') else "SZ"
+        market_prefix = "sh" if ticker.endswith('.SS') else "sz"
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
-        
-        # 🔥 智能生成链接
         links = {
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            # 财联社：改为搜索页，避免404
-            "cls": f"https://www.cls.cn/searchPage?keyword={pure_code}",
-            # 同花顺：ETF和股票有不同的前缀，这里用通用的资金流向页，非常实用
-            "10jqka": f"http://stockpage.10jqka.com.cn/{pure_code}/" 
+            "cls": f"https://www.cls.cn/stock/{market_prefix}{pure_code}",
+            "10jqka": f"http://stockpage.10jqka.com.cn/{pure_code}/"
         }
-        
     return news_items, avg, source_type, links
 
-# ==========================================
-# 3. 侧边栏
-# ==========================================
-with st.sidebar:
-    st.title("🎛️ 操盘控制台")
-    st.caption(f"📅 {datetime.now().strftime('%Y-%m-%d')}")
-    st.markdown("---")
-    
-    temp = get_market_temperature()
-    st.subheader("🌡️ 市场温度")
-    st.progress(temp / 100)
-    if temp > 80: st.error(f"🔥 过热 ({temp:.0f}%)")
-    elif temp < 20: st.info(f"🧊 冰点 ({temp:.0f}%)")
-    else: st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
-    
-    st.markdown("---")
-    
-    with st.expander("➕ 添加自定义行情", expanded=False):
-        new_name = st.text_input("资产名称", placeholder="巴西ETF")
-        new_code = st.text_input("资产代码", placeholder="EWZ")
-        if st.button("确认添加"):
-            if new_name and new_code:
-                st.session_state.custom_assets[new_name] = new_code.strip().upper()
-                st.cache_data.clear()
-                st.rerun()
-                
-    if st.session_state.custom_assets:
-        with st.expander("🗑️ 管理已添加资产"):
-            assets_list = list(st.session_state.custom_assets.keys())
-            to_delete = st.multiselect("选择删除:", assets_list)
-            if st.button("❌ 删除选中"):
-                for name in to_delete: del st.session_state.custom_assets[name]
-                st.cache_data.clear()
-                st.rerun()
-
-    st.markdown("---")
-    strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
-    
-    if "自定义" in strategy_mode:
-        c1, c2 = st.columns(2)
-        with c1: custom_short = st.number_input("短期", 1, 100, 5)
-        with c2: custom_long = st.number_input("长期", 2, 300, 30)
-
-    st.markdown("---")
-    if st.button("🔄 刷新数据", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-
-# ==========================================
-# 4. 数据计算引擎
-# ==========================================
-def plot_pro_chart(ticker, name):
+# --- 数据计算引擎 ---
+def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
     try:
         df = yf.download(ticker, period="2y", progress=False, threads=False)
         if df.empty: st.warning("暂无K线数据"); return
@@ -280,7 +221,7 @@ def load_csi500_rank():
     try: return pd.read_csv("csi500_rank.csv")
     except: return pd.DataFrame()
 
-def run_backtest(pool_name, start_date, end_date):
+def run_backtest_logic(pool_name, start_date, end_date):
     if pool_name == "全球宏观": assets = ASSETS_GLOBAL 
     else: assets = ASSETS_CN
     tickers = list(assets.values())
@@ -313,7 +254,57 @@ def run_backtest(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# 🔥 补全的回测页面
+# --- 页面渲染函数 ---
+def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
+    if "自定义" in strategy_mode:
+        with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
+    elif "双均线" in strategy_mode:
+        with st.spinner("计算均线..."): df = fetch_and_calculate(assets, "MA", long_w=60); asc=False
+    elif "RSI" in strategy_mode:
+        with st.spinner("计算RSI..."): df = fetch_and_calculate(assets, "RSI"); asc=True
+    else:
+        with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
+
+    if df.empty: st.warning("暂无数据，请重试"); return
+    df = df.sort_values("value", ascending=asc).reset_index(drop=True)
+    df.index += 1
+    
+    select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
+    selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
+    selected_index = select_options.index(selected_option)
+    target_row = df.iloc[selected_index]
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric(target_row['name'], target_row['code'])
+    c2.metric("当前价", f"{target_row['price']:.2f}")
+    c3.metric("指标值", f"{target_row['value']:.2f}")
+    st.markdown("---")
+    st.subheader(f"📈 {target_row['name']} 走势")
+    plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
+    st.markdown("---")
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载数据", csv, "data.csv", "text/csv", key=f"btn_{tab_key}")
+    st.dataframe(df, use_container_width=True)
+
+def render_500(strategy_mode, custom_short, custom_long):
+    df = load_csi500_rank()
+    if df.empty: st.warning("后台生成中..."); return
+    top = df.iloc[0]
+    st.success(f"🚀 冠军: **{top['名称']}** ({top['代码']})")
+    c1,c2,c3 = st.columns(3)
+    c1.metric("涨幅", f"{top['20日涨幅']}%"); c2.metric("价格", f"{top['当前价']}"); c3.metric("来源", "后台")
+    st.markdown("---")
+    opts = [f"{r['代码']} | {r['名称']}" for i,r in df.head(20).iterrows()]
+    sel = st.selectbox("选择股票:", opts)
+    if sel:
+        code = sel.split(" | ")[0]
+        name = sel.split(" | ")[1]
+        plot_pro_chart(code, name, strategy_mode, custom_short, custom_long)
+    st.markdown("---")
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
+    st.dataframe(df, use_container_width=True)
+
 def render_backtest():
     st.header("⏳ 策略时光机")
     st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
@@ -322,7 +313,7 @@ def render_backtest():
     start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
     end = c3.date_input("结束日期", value=datetime.today())
     if st.button("🚀 开始回测", type="primary"):
-        run_backtest(pool, start, end)
+        run_backtest_logic(pool, start, end)
 
 def render_news():
     st.header("📰 双语舆情雷达")
@@ -338,7 +329,6 @@ def render_news():
                 
                 if links:
                     st.success(f"✅ {name} 社区讨论区已定位")
-                    # 🔥 4列布局，新增同花顺
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.link_button("❄️ 雪球", links['xueqiu'])
                     with c2: st.link_button("🇨🇳 东财", links['eastmoney'])
@@ -368,8 +358,62 @@ def render_news():
                             st.write(f"情感: {n['score']:.2f}")
                             st.markdown(f"[阅读原文]({n['link']})")
 
-with tab1: render_common(ASSETS_GLOBAL, "global")
-with tab2: render_common(ASSETS_CN, "cn")
-with tab3: render_500()
+# ==========================================
+# 3. 侧边栏 & 主程序 (最后执行)
+# ==========================================
+with st.sidebar:
+    st.title("🎛️ 操盘控制台")
+    st.caption(f"📅 {datetime.now().strftime('%Y-%m-%d')}")
+    st.markdown("---")
+    
+    temp = get_market_temperature()
+    st.subheader("🌡️ 市场温度")
+    st.progress(temp / 100)
+    if temp > 80: st.error(f"🔥 过热 ({temp:.0f}%)")
+    elif temp < 20: st.info(f"🧊 冰点 ({temp:.0f}%)")
+    else: st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
+    
+    st.markdown("---")
+    
+    with st.expander("➕ 添加自定义行情", expanded=False):
+        new_name = st.text_input("资产名称", placeholder="巴西ETF")
+        new_code = st.text_input("资产代码", placeholder="EWZ")
+        if st.button("确认添加"):
+            if new_name and new_code:
+                st.session_state.custom_assets[new_name] = new_code.strip().upper()
+                st.cache_data.clear()
+                st.rerun()
+                
+    if st.session_state.custom_assets:
+        with st.expander("🗑️ 管理已添加资产"):
+            assets_list = list(st.session_state.custom_assets.keys())
+            to_delete = st.multiselect("选择删除:", assets_list)
+            if st.button("❌ 删除选中"):
+                for name in to_delete: del st.session_state.custom_assets[name]
+                st.cache_data.clear()
+                st.rerun()
+
+    st.markdown("---")
+    strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
+    
+    custom_short = 5
+    custom_long = 20
+    if "自定义" in strategy_mode:
+        c1, c2 = st.columns(2)
+        with c1: custom_short = st.number_input("短期", 1, 100, 5)
+        with c2: custom_long = st.number_input("长期", 2, 300, 30)
+
+    st.markdown("---")
+    if st.button("🔄 刷新数据", type="primary"):
+        st.cache_data.clear()
+        st.rerun()
+
+# 主程序执行入口
+st.title("📊 全能操盘手系统")
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测", "📰 舆情雷达"])
+
+with tab1: render_common(ASSETS_GLOBAL, "global", strategy_mode, custom_short, custom_long)
+with tab2: render_common(ASSETS_CN, "cn", strategy_mode, custom_short, custom_long)
+with tab3: render_500(strategy_mode, custom_short, custom_long)
 with tab4: render_backtest()
 with tab5: render_news()
