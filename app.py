@@ -96,17 +96,15 @@ def get_google_news(query, lang='zh-CN'):
         print(f"Google RSS Error: {e}")
         return [], 0
 
-# 新闻引擎 (含财联社修复)
+# 新闻引擎 (🔥 修复财联社404，新增同花顺)
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
     
     if is_cn_stock:
-        # A股：使用 Google News 搜中文名
         search_term = name.split('(')[0] 
         news_items, avg = get_google_news(search_term, 'zh-CN')
         source_type = "Google (A股)"
     else:
-        # 美股
         try:
             news_list = yf.Ticker(ticker).news
             if news_list:
@@ -129,15 +127,17 @@ def get_news_and_sentiment(ticker, name):
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
-        # 判断市场前缀 (财联社需要 sh 或 sz 小写)
-        market_prefix = "sh" if ticker.endswith('.SS') else "sz"
+        market = "SH" if ticker.endswith('.SS') else "SZ"
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
         
+        # 🔥 智能生成链接
         links = {
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            # 🔥 财联社直达链接
-            "cls": f"https://www.cls.cn/stock/{market_prefix}{pure_code}"
+            # 财联社：改为搜索页，避免404
+            "cls": f"https://www.cls.cn/searchPage?keyword={pure_code}",
+            # 同花顺：ETF和股票有不同的前缀，这里用通用的资金流向页，非常实用
+            "10jqka": f"http://stockpage.10jqka.com.cn/{pure_code}/" 
         }
         
     return news_items, avg, source_type, links
@@ -280,7 +280,6 @@ def load_csi500_rank():
     try: return pd.read_csv("csi500_rank.csv")
     except: return pd.DataFrame()
 
-# 🔥 补全的回测渲染函数
 def run_backtest(pool_name, start_date, end_date):
     if pool_name == "全球宏观": assets = ASSETS_GLOBAL 
     else: assets = ASSETS_CN
@@ -314,7 +313,7 @@ def run_backtest(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# 🔥 补全的回测渲染页面
+# 🔥 补全的回测页面
 def render_backtest():
     st.header("⏳ 策略时光机")
     st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
@@ -324,62 +323,6 @@ def render_backtest():
     end = c3.date_input("结束日期", value=datetime.today())
     if st.button("🚀 开始回测", type="primary"):
         run_backtest(pool, start, end)
-
-# ==========================================
-# 5. 渲染页面
-# ==========================================
-st.title("📊 全能操盘手系统")
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 全球", "🇨🇳 行业", "🔥 中证500", "🛠️ 历史回测", "📰 舆情雷达"])
-
-def render_common(assets, tab_key):
-    if "自定义" in strategy_mode:
-        with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
-    elif "双均线" in strategy_mode:
-        with st.spinner("计算均线..."): df = fetch_and_calculate(assets, "MA", long_w=60); asc=False
-    elif "RSI" in strategy_mode:
-        with st.spinner("计算RSI..."): df = fetch_and_calculate(assets, "RSI"); asc=True
-    else:
-        with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
-
-    if df.empty: st.warning("暂无数据，请重试"); return
-    df = df.sort_values("value", ascending=asc).reset_index(drop=True)
-    df.index += 1
-    
-    select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
-    selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
-    selected_index = select_options.index(selected_option)
-    target_row = df.iloc[selected_index]
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric(target_row['name'], target_row['code'])
-    c2.metric("当前价", f"{target_row['price']:.2f}")
-    c3.metric("指标值", f"{target_row['value']:.2f}")
-    st.markdown("---")
-    st.subheader(f"📈 {target_row['name']} 走势")
-    plot_pro_chart(target_row['code'], target_row['name'])
-    st.markdown("---")
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 下载数据", csv, "data.csv", "text/csv", key=f"btn_{tab_key}")
-    st.dataframe(df, use_container_width=True)
-
-def render_500():
-    df = load_csi500_rank()
-    if df.empty: st.warning("后台生成中..."); return
-    top = df.iloc[0]
-    st.success(f"🚀 冠军: **{top['名称']}** ({top['代码']})")
-    c1,c2,c3 = st.columns(3)
-    c1.metric("涨幅", f"{top['20日涨幅']}%"); c2.metric("价格", f"{top['当前价']}"); c3.metric("来源", "后台")
-    st.markdown("---")
-    opts = [f"{r['代码']} | {r['名称']}" for i,r in df.head(20).iterrows()]
-    sel = st.selectbox("选择股票:", opts)
-    if sel:
-        code = sel.split(" | ")[0]
-        name = sel.split(" | ")[1]
-        plot_pro_chart(code, name)
-    st.markdown("---")
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
-    st.dataframe(df, use_container_width=True)
 
 def render_news():
     st.header("📰 双语舆情雷达")
@@ -395,10 +338,12 @@ def render_news():
                 
                 if links:
                     st.success(f"✅ {name} 社区讨论区已定位")
-                    c1, c2, c3 = st.columns(3)
-                    with c1: st.link_button("❄️ 雪球讨论", links['xueqiu'])
-                    with c2: st.link_button("🇨🇳 东财资讯", links['eastmoney'])
-                    with c3: st.link_button("⚡ 财联社电报", links['cls'])
+                    # 🔥 4列布局，新增同花顺
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.link_button("❄️ 雪球", links['xueqiu'])
+                    with c2: st.link_button("🇨🇳 东财", links['eastmoney'])
+                    with c3: st.link_button("⚡ 财联社", links['cls'])
+                    with c4: st.link_button("📈 同花顺", links['10jqka'])
                     st.markdown("---")
 
                 if not news_items:
@@ -413,7 +358,6 @@ def render_news():
                     if avg > 0.1: emoji = "😄 (利好)"
                     elif avg < -0.1: emoji = "😨 (利空)"
                     c2.metric("情感得分", f"{avg:.2f}", emoji)
-                    
                     st.markdown("---")
                     for n in news_items:
                         color = "gray"
