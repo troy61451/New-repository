@@ -11,22 +11,11 @@ from textblob import TextBlob
 from snownlp import SnowNLP 
 
 # ==========================================
-# 1. 基础配置 & 命名管理 (🔥 在这里修改名字)
+# 1. 基础配置 & 资产池
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
-# --- 自定义标签页名称 ---
-NAME_STRATEGY_TAB = "⚔️ 策略看板"  # 主标签1
-NAME_NEWS_TAB = "📰 舆情雷达"      # 主标签2
-NAME_WATCHLIST_TAB = "⭐ 我的自选" # 主标签3 (新)
-
-# --- 策略子标签名称 ---
-SUB_NAME_GLOBAL = "🌍 全球核心"
-SUB_NAME_CN = "🇨🇳 行业龙头"
-SUB_NAME_500 = "🔥 中证500"
-SUB_NAME_BACKTEST = "🛠️ 历史回测"
-
-# 初始化 Session State (自选股存储在这里)
+# 自选股存储
 if 'my_watchlist' not in st.session_state:
     st.session_state.my_watchlist = {
         "贵州茅台": "600519.SS",
@@ -34,8 +23,18 @@ if 'my_watchlist' not in st.session_state:
         "英伟达": "NVDA"
     }
 
-# 默认资产池
-ASSETS_GLOBAL = {
+# 名称配置
+NAME_STRATEGY_TAB = "⚔️ 策略看板"
+NAME_NEWS_TAB = "📰 舆情雷达"
+NAME_WATCHLIST_TAB = "⭐ 我的自选"
+
+SUB_NAME_GLOBAL = "🌍 全球核心"
+SUB_NAME_CN = "🇨🇳 行业龙头"
+SUB_NAME_500 = "🔥 中证500"
+SUB_NAME_BACKTEST = "🛠️ 历史回测"
+
+# 默认资产
+DEFAULT_ASSETS_GLOBAL = {
     "纳指ETF(美成长)": "513100.SS", "标普500(美大盘)": "513500.SS",
     "日经ETF(日本)": "513520.SS", "德国ETF(欧洲)": "513030.SS",
     "黄金ETF(避险)": "518880.SS", "红利ETF(防守)": "510880.SS",
@@ -50,10 +49,43 @@ ASSETS_CN = {
     "家电ETF": "159996.SZ",   "煤炭ETF": "515220.SS",
     "有色ETF": "512400.SS",   "传媒ETF": "512980.SS"
 }
+ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 
 # ==========================================
 # 2. 核心功能函数
 # ==========================================
+
+# 🔥 新增：智能代码转换器
+def smart_format_code(raw_code):
+    """
+    自动识别输入的是哪种代码，并转换为 Yahoo 格式
+    """
+    code = raw_code.strip().upper()
+    
+    # 1. 如果已经包含后缀 (如 .SS, .SZ, .HK)，直接返回
+    if "." in code:
+        return code
+        
+    # 2. 纯数字处理
+    if code.isdigit():
+        # A股逻辑 (6位)
+        if len(code) == 6:
+            # 上海: 60xxxx, 68xxxx (科创), 51xxxx (ETF), 58xxxx (ETF)
+            if code.startswith(('60', '68', '51', '58')):
+                return f"{code}.SS"
+            # 深圳: 00xxxx, 30xxxx (创业), 15xxxx (ETF), 16xxxx (LOF)
+            elif code.startswith(('00', '30', '15', '16')):
+                return f"{code}.SZ"
+            # 北交所目前支持较差，暂不处理或默认加 .SS 试错
+            else:
+                return f"{code}.SS" # 默认策略
+                
+        # 港股逻辑 (3-5位) -> 补齐4位并加 .HK
+        elif len(code) <= 5:
+            return f"{int(code):04d}.HK"
+            
+    # 3. 美股逻辑 (纯字母) -> 保持原样
+    return code
 
 # --- 辅助函数 ---
 @st.cache_data(ttl=3600)
@@ -270,7 +302,7 @@ def run_backtest_logic(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# --- 渲染函数 ---
+# --- 页面渲染函数 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     if "自定义" in strategy_mode:
         with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
@@ -281,7 +313,9 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     else:
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
-    if df.empty: st.warning("暂无数据"); return
+    if df.empty: 
+        st.warning("暂无数据 (可能需要刷新)")
+        return
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     df.index += 1
     
@@ -333,7 +367,7 @@ def render_backtest():
 
 def render_news():
     st.header("📰 双语舆情雷达")
-    all_options = {**ASSETS_GLOBAL, **ASSETS_CN, **st.session_state.my_watchlist} # 合并所有
+    all_options = {**ASSETS_GLOBAL, **ASSETS_CN, **st.session_state.my_watchlist} # 合并
     asset_list = [f"{k} | {v}" for k,v in all_options.items()]
     selected_asset = st.selectbox("🔍 选择资产:", asset_list)
     if selected_asset:
@@ -374,24 +408,24 @@ def render_news():
                             st.write(f"情感: {n['score']:.2f}")
                             st.markdown(f"[阅读原文]({n['link']})")
 
-# 🔥 新增：自选股管理界面
+# 🔥 智能自选股管理器
 def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     st.header("⭐ 我的自选股")
     
-    # 添加区域
     with st.expander("➕ 添加新资产", expanded=False):
         c1, c2, c3 = st.columns([2, 2, 1])
-        new_name = c1.text_input("名称 (如: 腾讯)", placeholder="腾讯控股")
-        new_code = c2.text_input("代码 (如: 0700.HK)", placeholder="0700.HK")
+        new_name = c1.text_input("名称 (如: 特变电工)", placeholder="特变电工")
+        new_code = c2.text_input("代码 (如: 600089)", placeholder="600089")
         if c3.button("添加", type="primary", use_container_width=True):
             if new_name and new_code:
-                st.session_state.my_watchlist[new_name] = new_code.strip().upper()
-                st.success(f"已添加: {new_name}")
+                # 🔥 调用智能转换器
+                safe_code = smart_format_code(new_code)
+                st.session_state.my_watchlist[new_name] = safe_code
+                st.success(f"已添加: {new_name} ({safe_code})")
                 st.rerun()
             else:
                 st.error("请输入名称和代码")
 
-    # 删除区域
     if st.session_state.my_watchlist:
         with st.expander("🗑️ 删除资产", expanded=False):
             to_delete = st.multiselect("选择要删除的资产:", list(st.session_state.my_watchlist.keys()))
@@ -401,7 +435,6 @@ def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     
     st.markdown("---")
     
-    # 渲染自选股数据
     if st.session_state.my_watchlist:
         render_common(st.session_state.my_watchlist, "watchlist_tab", strategy_mode, custom_short, custom_long)
     else:
@@ -443,7 +476,7 @@ with st.sidebar:
 st.title("📊 全能操盘手系统")
 main_tabs = st.tabs([NAME_STRATEGY_TAB, NAME_NEWS_TAB, NAME_WATCHLIST_TAB])
 
-# 1. 策略看板 (包含子标签)
+# 1. 策略看板
 with main_tabs[0]:
     sub_tabs = st.tabs([SUB_NAME_GLOBAL, SUB_NAME_CN, SUB_NAME_500, SUB_NAME_BACKTEST])
     with sub_tabs[0]: render_common(ASSETS_GLOBAL, "global", strategy_mode, custom_short, custom_long)
@@ -455,6 +488,6 @@ with main_tabs[0]:
 with main_tabs[1]:
     render_news()
 
-# 3. 我的自选 (新增)
+# 3. 我的自选
 with main_tabs[2]:
     render_watchlist_manager(strategy_mode, custom_short, custom_long)
