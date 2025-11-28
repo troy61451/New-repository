@@ -57,7 +57,6 @@ ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 # 2. 核心功能函数
 # ==========================================
 
-# 智能代码转换器
 def smart_format_code(raw_code):
     code = raw_code.strip().upper()
     if "." in code: return code 
@@ -69,44 +68,26 @@ def smart_format_code(raw_code):
             return f"{int(code):04d}.HK"
     return code 
 
-# 🔥 核心升级：优先使用新浪财经获取中文名
 def fetch_stock_name(symbol):
     try:
-        # 1. 尝试 A股 (新浪接口极快且支持中文)
         if symbol.endswith(".SS") or symbol.endswith(".SZ"):
             market = "sh" if symbol.endswith(".SS") else "sz"
             code = symbol.replace(".SS", "").replace(".SZ", "")
-            # 新浪行情接口
             r = requests.get(f"http://hq.sinajs.cn/list={market}{code}", timeout=2)
-            # 返回格式: var hq_str_sh600519="贵州茅台,..."
             if "=\"" in r.text:
                 content = r.text.split("=\"")[1]
-                if len(content) > 1:
-                    name = content.split(",")[0]
-                    # 处理可能的乱码 (新浪通常是GBK)
-                    try:
-                        # 如果requests没自动解码，手动尝试
-                        return name
-                    except:
-                        pass
-                    return name
+                if len(content) > 1: return content.split(",")[0]
 
-        # 2. 尝试 港股
         if symbol.endswith(".HK"):
             code = symbol.replace(".HK", "")
             r = requests.get(f"http://hq.sinajs.cn/list=hk{code}", timeout=2)
             if "=\"" in r.text:
                 content = r.text.split("=\"")[1]
-                if len(content) > 1:
-                    name = content.split(",")[1] # 港股名称在第二个字段
-                    return name
+                if len(content) > 1: return content.split(",")[1]
 
-        # 3. 美股或其他：回退到 Yahoo
         t = yf.Ticker(symbol)
         return t.info.get('shortName') or t.info.get('longName') or symbol
-        
-    except:
-        return symbol
+    except: return symbol
 
 # --- 辅助函数 ---
 @st.cache_data(ttl=3600)
@@ -205,6 +186,7 @@ def get_news_and_sentiment(ticker, name):
 # --- 数据计算引擎 ---
 def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
     try:
+        # 强制下载数据
         df = yf.download(ticker, period="2y", progress=False, threads=False)
         if df.empty: st.warning("暂无K线数据"); return
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -243,7 +225,10 @@ def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
         fig.update_layout(template='plotly_dark', height=700, xaxis_rangeslider_visible=False, paper_bgcolor='#000000', plot_bgcolor='#0e0e0e', margin=dict(l=5, r=5, t=30, b=5), hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0))
         fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1月", step="month", stepmode="backward"), dict(count=6, label="半年", step="month", stepmode="backward"), dict(step="all", label="全部")]), bgcolor="#333", activecolor="#555", font=dict(color="white")), row=1, col=1)
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#222'); fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])])
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # 🔥 关键修复：给图表加上唯一的 key，强制 Streamlit 重新渲染
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker}_{datetime.now().microsecond}")
+        
     except: st.error("K线图加载失败，请刷新")
 
 @st.cache_data(ttl=3600) 
@@ -349,6 +334,7 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     c3.metric("指标值", f"{target_row['value']:.2f}")
     st.markdown("---")
     st.subheader(f"📈 {target_row['name']} 走势")
+    # 🔥 调用图表时传递了唯一key
     plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
     st.markdown("---")
     csv = df.to_csv(index=False).encode('utf-8-sig')
@@ -479,6 +465,7 @@ with st.sidebar:
     
     st.markdown("---")
     
+    # 策略选择 (统一管理)
     strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
     
     custom_short = 5
