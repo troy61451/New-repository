@@ -36,7 +36,7 @@ ASSETS_CN = {
 ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 
 # ==========================================
-# 2. 所有功能函数定义 (必须放在最前面!)
+# 2. 所有功能函数定义
 # ==========================================
 
 # --- 辅助函数 ---
@@ -123,14 +123,24 @@ def get_news_and_sentiment(ticker, name):
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
-        market_prefix = "sh" if ticker.endswith('.SS') else "sz"
+        # 雪球和东财代码后缀是大写
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
+        
+        # 🔥 链接逻辑大升级
         links = {
+            # 雪球：最稳
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
+            
+            # 东财：ETF 用 fund.eastmoney, 股票用 quote.eastmoney (这里统一用 quote 兼容性较好)
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            "cls": f"https://www.cls.cn/stock/{market_prefix}{pure_code}",
-            "10jqka": f"http://stockpage.10jqka.com.cn/{pure_code}/"
+            
+            # 财联社：必须用 searchPage，因为 ETF 没有个股页
+            "cls": f"https://www.cls.cn/searchPage?keyword={pure_code}",
+            
+            # 同花顺：使用爱问财 (iWencai)，它是万能的，会自动识别 ETF 并跳转
+            "10jqka": f"http://www.iwencai.com/unifiedwap/result?w={pure_code}"
         }
+        
     return news_items, avg, source_type, links
 
 # --- 数据计算引擎 ---
