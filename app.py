@@ -318,7 +318,74 @@ def run_backtest_logic(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# --- 页面渲染函数 ---
+# 🔥 核心升级：自定义列表渲染函数 (仿东方财富列表)
+def render_clickable_list(df, tab_key, strategy_mode):
+    # 1. 状态管理：记录当前选中的是哪只股票
+    state_key = f"selected_code_{tab_key}"
+    if state_key not in st.session_state:
+        # 默认选中第一个
+        st.session_state[state_key] = df.iloc[0]['code'] if not df.empty else None
+
+    # 2. 绘制表头
+    cols = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
+    headers = ["📌 名称 (点击)", "代码", "现价", "今日涨跌", "成交量", "策略信号"]
+    for col, h in zip(cols, headers):
+        col.markdown(f"**{h}**")
+    
+    st.markdown("---")
+
+    # 3. 循环绘制每一行 (Button代替文字)
+    target_row = None # 用于存储选中的行数据
+    
+    for i, row in df.iterrows():
+        c = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
+        
+        # Col 1: 股票名称按钮
+        # 技巧：如果该行是被选中的，按钮前面加个红点提示
+        label = row['name']
+        if st.session_state[state_key] == row['code']:
+            label = f"🔴 {label}" 
+            target_row = row # 锁定当前要画图的数据
+            
+        # 🔥 点击按钮逻辑
+        if c[0].button(label, key=f"btn_{tab_key}_{row['code']}"):
+            st.session_state[state_key] = row['code']
+            st.rerun() # 立即刷新，更新下方图表
+            
+        # Col 2: 代码
+        c[1].caption(row['code'])
+        
+        # Col 3: 现价
+        c[2].write(f"{row['price']:.2f}")
+        
+        # Col 4: 涨跌幅 (红涨绿跌)
+        pct = row['daily_pct'] * 100
+        color = "red" if pct >= 0 else "green"
+        c[3].markdown(f":{color}[{pct:.2f}%]")
+        
+        # Col 5: 成交量 (自动换算万/亿)
+        vol = row['volume']
+        if vol > 100000000: vol_str = f"{vol/100000000:.2f}亿"
+        elif vol > 10000: vol_str = f"{vol/10000:.0f}万"
+        else: vol_str = str(vol)
+        c[4].caption(vol_str)
+        
+        # Col 6: 策略信号 (根据不同模式显示不同颜色)
+        val = row['value']
+        s_color = "gray"
+        if "RSI" in strategy_mode:
+            if val < 30: s_color = "red" 
+            elif val > 70: s_color = "green" 
+        elif "动量" in strategy_mode:
+            if val > 0: s_color = "red"
+            else: s_color = "green"
+        
+        c[5].markdown(f":{s_color}[{val:.2f}]")
+    
+    st.markdown("---")
+    return target_row
+
+# --- 页面渲染函数 (适配新列表) ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     if "自定义" in strategy_mode:
         with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
@@ -329,51 +396,22 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     else:
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
-    if df.empty: st.warning("暂无数据，请重试"); return
+    if df.empty: st.warning("暂无数据"); return
+    
+    # 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
-    df.index += 1
     
-    st.subheader("📋 实时行情 (点击行查看详情)")
-    df_display = df.copy()
-    signal_col = "策略数值"
-    if "RSI" in strategy_mode: signal_col = "RSI (低买高卖)"
-    elif "动量" in strategy_mode: signal_col = "20日涨幅%"
-    elif "双均线" in strategy_mode: signal_col = "均线乖离%"
+    # 🔥 调用新的列表渲染函数
+    target_row = render_clickable_list(df, tab_key, strategy_mode)
     
-    df_display = df_display.rename(columns={"name": "名称", "code": "代码", "price": "现价", "daily_pct": "今日涨跌", "volume": "成交量", "value": signal_col})
-    cols_to_show = ["名称", "代码", "现价", "今日涨跌", "成交量", signal_col]
+    # 绘制选中行的图表
+    if target_row is not None:
+        st.subheader(f"📈 {target_row['name']} ({target_row['code']}) 走势")
+        plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
     
-    # 🔥 交互式表格：on_select="rerun" 实现点击即选
-    event = st.dataframe(
-        df_display[cols_to_show],
-        use_container_width=True,
-        column_config={
-            "现价": st.column_config.NumberColumn(format="¥%.2f"),
-            "今日涨跌": st.column_config.NumberColumn(format="%.2f%%"),
-            "成交量": st.column_config.NumberColumn(format="%d"),
-            signal_col: st.column_config.ProgressColumn(format="%.2f", min_value=-100 if "RSI" not in strategy_mode else 0, max_value=100),
-        },
-        on_select="rerun",
-        selection_mode="single-row",
-        key=f"df_{tab_key}"
-    )
-    
-    # 获取选中行 (默认第一行)
-    selected_index = 0
-    if len(event.selection.rows) > 0:
-        selected_index = event.selection.rows[0]
-    
-    target_row = df.iloc[selected_index]
-    
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    c1.metric(target_row['name'], target_row['code'])
-    pct = target_row['daily_pct'] * 100
-    c2.metric("今日涨跌", f"{pct:.2f}%", f"{pct:.2f}%")
-    c3.metric(signal_col, f"{target_row['value']:.2f}")
-    
-    st.subheader(f"📈 {target_row['name']} 走势")
-    plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
+    # 下载按钮
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载本页数据", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
 
 def render_500(strategy_mode, custom_short, custom_long):
     df = load_csi500_rank()
