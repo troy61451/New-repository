@@ -16,7 +16,7 @@ from snownlp import SnowNLP
 # ==========================================
 # 0. 云端用户数据管理 (JSONBin)
 # ==========================================
-# ⚠️ 这里已经填好了你的 Key，不要动
+# ⚠️ 这里已经填好了你的 Key
 BIN_ID = "69290568d0ea881f4004c691"
 BIN_API_KEY = "$2a$10$CnDfqWlL.llsLOaGhr6gBOaiGdAaeyZmpmJxO384DTFPZrWEgeWja"
 
@@ -158,24 +158,36 @@ def smart_format_code(raw_code):
         elif len(code) <= 5: return f"{int(code):04d}.HK"
     return code 
 
+# 🔥 核心升级：增加 GBK 解码，强制获取中文名
 def fetch_stock_name(symbol):
     try:
-        if symbol.endswith(".SS") or symbol.endswith(".SZ"):
-            market = "sh" if symbol.endswith(".SS") else "sz"
-            code = symbol.replace(".SS", "").replace(".SZ", "")
-            r = requests.get(f"http://hq.sinajs.cn/list={market}{code}", timeout=2)
-            if "=\"" in r.text:
-                content = r.text.split("=\"")[1]
-                if len(content) > 1: return content.split(",")[0]
-        if symbol.endswith(".HK"):
-            code = symbol.replace(".HK", "")
-            r = requests.get(f"http://hq.sinajs.cn/list=hk{code}", timeout=2)
-            if "=\"" in r.text:
-                content = r.text.split("=\"")[1]
-                if len(content) > 1: return content.split(",")[1]
+        # 1. A股/港股 (使用新浪接口，带 GBK 解码)
+        if symbol.endswith(".SS") or symbol.endswith(".SZ") or symbol.endswith(".HK"):
+            sina_code = ""
+            if symbol.endswith(".SS"): sina_code = "sh" + symbol.replace(".SS", "")
+            elif symbol.endswith(".SZ"): sina_code = "sz" + symbol.replace(".SZ", "")
+            elif symbol.endswith(".HK"): sina_code = "hk" + symbol.replace(".HK", "")
+            
+            # 请求新浪
+            r = requests.get(f"http://hq.sinajs.cn/list={sina_code}", timeout=3)
+            
+            # 🔥 强制使用 GBK 解码 (关键！)
+            text = r.content.decode('gbk')
+            
+            if "=\"" in text:
+                content = text.split("=\"")[1]
+                if len(content) > 1:
+                    name_part = content.split(",")[0]
+                    # 港股名称在第二个位置
+                    if symbol.endswith(".HK"):
+                        name_part = content.split(",")[1]
+                    return name_part
+
+        # 2. 美股 (使用 Yahoo)
         t = yf.Ticker(symbol)
         return t.info.get('shortName') or t.info.get('longName') or symbol
-    except: return symbol
+    except:
+        return symbol
 
 @st.cache_data(ttl=3600)
 def get_market_temperature():
@@ -425,7 +437,7 @@ def render_clickable_list(df, tab_key, strategy_mode):
     st.markdown("---")
     return target_row
 
-# --- 页面渲染函数 (🔥 补全) ---
+# --- 页面渲染函数 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if ("RSI" in strategy_mode) or ("超跌" in strategy_mode) else False
     if df.empty: st.warning("暂无数据"); return
@@ -459,7 +471,6 @@ def render_500(strategy_mode, custom_short, custom_long):
     st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
     st.dataframe(df, use_container_width=True)
 
-# 🔥 补全 render_backtest
 def render_backtest():
     st.header("⏳ 策略时光机")
     st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
