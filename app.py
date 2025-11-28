@@ -6,6 +6,7 @@ import requests
 import xml.etree.ElementTree as ET
 import urllib.parse
 import json
+import os
 import hashlib
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
@@ -15,8 +16,7 @@ from snownlp import SnowNLP
 # ==========================================
 # 0. 云端用户数据管理 (JSONBin)
 # ==========================================
-
-# ✅ 已填入你的云端密钥
+# ⚠️ 这里已经填好了你的 Key，不要动
 BIN_ID = "69290568d0ea881f4004c691"
 BIN_API_KEY = "$2a$10$CnDfqWlL.llsLOaGhr6gBOaiGdAaeyZmpmJxO384DTFPZrWEgeWja"
 
@@ -28,19 +28,15 @@ class DataManager:
             "Content-Type": "application/json"
         }
 
-    # 从云端读取数据
     def _load_all_data(self):
         try:
-            # 加 latest 是为了获取最新版本
             response = requests.get(self.base_url + "/latest", headers=self.headers)
             if response.status_code == 200:
-                # JSONBin v3 的数据在 record 字段里
                 return response.json().get("record", {})
             else:
                 return {}
         except: return {}
 
-    # 保存数据到云端
     def _save_all_data(self, data):
         try:
             requests.put(self.base_url, headers=self.headers, json=data)
@@ -50,7 +46,6 @@ class DataManager:
     def _hash_password(self, password):
         return hashlib.sha256(password.encode()).hexdigest()
 
-    # 注册
     def register(self, username, password):
         data = self._load_all_data()
         if username in data:
@@ -63,7 +58,6 @@ class DataManager:
         self._save_all_data(data)
         return True, "注册成功，请登录"
 
-    # 登录
     def login(self, username, password):
         data = self._load_all_data()
         if username not in data:
@@ -73,7 +67,6 @@ class DataManager:
             return True, data[username].get("watchlist", {})
         return False, None
 
-    # 实时同步自选股
     def save_user_watchlist(self, username, watchlist):
         data = self._load_all_data()
         if username in data:
@@ -230,30 +223,21 @@ def get_google_news(query, lang='zh-CN'):
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
     clean_name = name.split('(')[0].replace("ETF", "")
-    
     if is_cn_stock:
-        news_items, avg = get_google_news(clean_name, 'zh-CN')
-        source_type = "Google (A股)"
+        news_items, avg = get_google_news(clean_name, 'zh-CN'); source_type = "Google (A股)"
     else:
         try:
             news_list = yf.Ticker(ticker).news
             if news_list:
-                news_items = []
-                total = 0
+                news_items = []; total = 0
                 for item in news_list:
-                    title = item.get('title', '')
-                    blob = TextBlob(title)
-                    score = blob.sentiment.polarity
-                    total += score
+                    title = item.get('title', ''); blob = TextBlob(title); score = blob.sentiment.polarity; total += score
                     pub_time = datetime.fromtimestamp(item.get('providerPublishTime', 0))
                     news_items.append({"title": title, "link": item.get('link', ''), "time": pub_time.strftime('%Y-%m-%d %H:%M'), "score": score, "source": item.get('publisher', 'Yahoo')})
-                avg = total / len(news_items)
-                source_type = "Yahoo Finance"
+                avg = total / len(news_items); source_type = "Yahoo Finance"
             else: raise Exception("Yahoo empty")
         except:
-            news_items, avg = get_google_news(f"{ticker} stock", 'en-US')
-            source_type = "Google (Global)"
-
+            news_items, avg = get_google_news(f"{ticker} stock", 'en-US'); source_type = "Google (Global)"
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
@@ -402,6 +386,7 @@ def render_clickable_list(df, tab_key, strategy_mode):
     if state_key not in st.session_state:
         st.session_state[state_key] = df.iloc[0]['code'] if not df.empty else None
 
+    # 表头 (精简为3列)
     cols = st.columns([2, 1.5, 2])
     headers = ["📌 资产", "行情 (现价/涨跌)", "📊 策略雷达"]
     for col, h in zip(cols, headers): col.markdown(f"**{h}**")
@@ -440,7 +425,7 @@ def render_clickable_list(df, tab_key, strategy_mode):
     st.markdown("---")
     return target_row
 
-# --- 页面渲染 ---
+# --- 页面渲染函数 (🔥 补全) ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if ("RSI" in strategy_mode) or ("超跌" in strategy_mode) else False
     if df.empty: st.warning("暂无数据"); return
@@ -473,6 +458,58 @@ def render_500(strategy_mode, custom_short, custom_long):
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
     st.dataframe(df, use_container_width=True)
+
+# 🔥 补全 render_backtest
+def render_backtest():
+    st.header("⏳ 策略时光机")
+    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
+    c1, c2, c3 = st.columns(3)
+    pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
+    start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
+    end = c3.date_input("结束日期", value=datetime.today())
+    if st.button("🚀 开始回测", type="primary"):
+        run_backtest_logic(pool, start, end)
+
+def render_news():
+    st.header("📰 双语舆情雷达")
+    all_options = {**ASSETS_GLOBAL, **ASSETS_CN, **st.session_state.my_watchlist} 
+    asset_list = [f"{k} | {v}" for k,v in all_options.items()]
+    selected_asset = st.selectbox("🔍 选择资产:", asset_list)
+    if selected_asset:
+        name = selected_asset.split(" | ")[0]
+        code = selected_asset.split(" | ")[1]
+        if st.button("📡 扫描舆情", type="primary"):
+            with st.spinner("正在聚合全网新闻..."):
+                news_items, avg, source_type, links = get_news_and_sentiment(code, name)
+                if links:
+                    st.success(f"✅ {name} 社区讨论区已定位")
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.link_button("❄️ 雪球", links['xueqiu'])
+                    with c2: st.link_button("🇨🇳 东财", links['eastmoney'])
+                    with c3: st.link_button("⚡ 财联社", links['cls'])
+                    with c4: st.link_button("📈 同花顺", links['10jqka'])
+                    st.markdown("---")
+                if not news_items:
+                    st.warning(f"⚠️ {source_type} 暂未收录最新报道")
+                    google_url = f"https://www.google.com/search?q={name}+stock+news&tbm=nws"
+                    st.link_button("🔍 Google搜索兜底", google_url)
+                else:
+                    st.caption(f"数据来源: {source_type}")
+                    c1, c2 = st.columns(2)
+                    c1.metric("新闻条数", len(news_items))
+                    emoji = "😐"
+                    if avg > 0.1: emoji = "😄 (利好)"
+                    elif avg < -0.1: emoji = "😨 (利空)"
+                    c2.metric("情感得分", f"{avg:.2f}", emoji)
+                    st.markdown("---")
+                    for n in news_items:
+                        color = "gray"
+                        if n['score'] > 0.1: color = "green"
+                        if n['score'] < -0.1: color = "red"
+                        with st.expander(f":{color}[{n['title']}]"):
+                            st.write(f"时间: {n['time']} | 来源: {n['source']}")
+                            st.write(f"情感: {n['score']:.2f}")
+                            st.markdown(f"[阅读原文]({n['link']})")
 
 def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     st.header("⭐ 我的自选股")
