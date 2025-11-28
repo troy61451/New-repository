@@ -228,25 +228,17 @@ def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
         st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker}_{datetime.now().microsecond}")
     except: st.error("K线图加载失败，请刷新")
 
-# 🔥 升级版数据获取：增加【今日涨跌】和【成交量】
 @st.cache_data(ttl=3600) 
 def fetch_and_calculate(asset_dict, mode, **kwargs):
     tickers = list(asset_dict.values())
     try:
-        # 获取完整数据 (包含 Open, High, Low, Close, Volume)
         data = yf.download(tickers, period="2y", progress=False, threads=False)
-        
         if data.empty: return pd.DataFrame()
-        
-        # 提取 Close 和 Volume
         if 'Close' in data: df_close = data['Close']
         else: df_close = data
-        
-        # 处理 Volume (兼容性处理)
-        df_vol = pd.DataFrame()
         if 'Volume' in data: df_vol = data['Volume']
+        else: df_vol = pd.DataFrame()
 
-        # 兼容单资产 Series
         if isinstance(df_close, pd.Series): df_close = df_close.to_frame(name=tickers[0])
         if isinstance(df_vol, pd.Series): df_vol = df_vol.to_frame(name=tickers[0])
 
@@ -254,32 +246,18 @@ def fetch_and_calculate(asset_dict, mode, **kwargs):
         for name, code in asset_dict.items():
             try:
                 if code not in df_close.columns: continue
-                
                 s = df_close[code].dropna()
                 required_len = kwargs.get('long_w', 61)
                 if len(s) < required_len: continue
-                
                 curr_price = s.iloc[-1]
                 prev_price = s.iloc[-2]
-                
-                # 🔥 计算今日涨跌幅
                 daily_pct = (curr_price - prev_price) / prev_price
-                
-                # 🔥 获取今日成交量 (如果存在)
                 curr_vol = 0
                 if not df_vol.empty and code in df_vol.columns:
                     curr_vol = df_vol[code].iloc[-1]
 
-                # 基础数据包
-                base_data = {
-                    "name": name, 
-                    "code": code, 
-                    "price": curr_price,
-                    "daily_pct": daily_pct,  # 新增：今日涨幅
-                    "volume": curr_vol       # 新增：成交量
-                }
+                base_data = {"name": name, "code": code, "price": curr_price, "daily_pct": daily_pct, "volume": curr_vol}
                 
-                # 策略计算逻辑
                 if mode == "MOM":
                     val = (curr_price - s.iloc[-21]) / s.iloc[-21] * 100
                     base_data["value"] = val
@@ -342,7 +320,6 @@ def run_backtest_logic(pool_name, start_date, end_date):
 
 # --- 页面渲染函数 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
-    # 1. 计算数据
     if "自定义" in strategy_mode:
         with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
     elif "双均线" in strategy_mode:
@@ -353,64 +330,44 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据，请重试"); return
-    
-    # 2. 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     df.index += 1
     
-    # 🔥 3. 显示全景行情列表 (Dataframe)
-    st.subheader("📋 实时行情总览")
-    
-    # 构造展示用的 DataFrame
+    st.subheader("📋 实时行情 (点击行查看详情)")
     df_display = df.copy()
-    
-    # 根据不同策略显示不同的"信号列"名称
     signal_col = "策略数值"
     if "RSI" in strategy_mode: signal_col = "RSI (低买高卖)"
     elif "动量" in strategy_mode: signal_col = "20日涨幅%"
     elif "双均线" in strategy_mode: signal_col = "均线乖离%"
     
-    # 重命名列以便展示
-    df_display = df_display.rename(columns={
-        "name": "名称",
-        "code": "代码",
-        "price": "现价",
-        "daily_pct": "今日涨跌",
-        "volume": "成交量",
-        "value": signal_col
-    })
-    
-    # 选择要展示的列
+    df_display = df_display.rename(columns={"name": "名称", "code": "代码", "price": "现价", "daily_pct": "今日涨跌", "volume": "成交量", "value": signal_col})
     cols_to_show = ["名称", "代码", "现价", "今日涨跌", "成交量", signal_col]
     
-    # 使用 Streamlit 的高级 Column Config 来美化表格
-    st.dataframe(
+    # 🔥 交互式表格：on_select="rerun" 实现点击即选
+    event = st.dataframe(
         df_display[cols_to_show],
         use_container_width=True,
         column_config={
             "现价": st.column_config.NumberColumn(format="¥%.2f"),
-            "今日涨跌": st.column_config.NumberColumn(format="%.2f%%"), # 显示百分比
+            "今日涨跌": st.column_config.NumberColumn(format="%.2f%%"),
             "成交量": st.column_config.NumberColumn(format="%d"),
-            signal_col: st.column_config.ProgressColumn(
-                format="%.2f",
-                min_value=-100 if "RSI" not in strategy_mode else 0,
-                max_value=100,
-            ),
-        }
+            signal_col: st.column_config.ProgressColumn(format="%.2f", min_value=-100 if "RSI" not in strategy_mode else 0, max_value=100),
+        },
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"df_{tab_key}"
     )
     
-    st.markdown("---")
-
-    # 4. 下拉选择查看详情 (保持原有功能)
-    select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
-    selected_option = st.selectbox("👉 选择资产查看 K 线 & 信号:", select_options, key=f"sel_{tab_key}")
-    selected_index = select_options.index(selected_option)
+    # 获取选中行 (默认第一行)
+    selected_index = 0
+    if len(event.selection.rows) > 0:
+        selected_index = event.selection.rows[0]
+    
     target_row = df.iloc[selected_index]
     
+    st.markdown("---")
     c1, c2, c3 = st.columns(3)
     c1.metric(target_row['name'], target_row['code'])
-    
-    # 显示今日涨跌颜色
     pct = target_row['daily_pct'] * 100
     c2.metric("今日涨跌", f"{pct:.2f}%", f"{pct:.2f}%")
     c3.metric(signal_col, f"{target_row['value']:.2f}")
@@ -490,7 +447,6 @@ def render_news():
                             st.write(f"情感: {n['score']:.2f}")
                             st.markdown(f"[阅读原文]({n['link']})")
 
-# 🔥 极简自选股管理器
 def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     st.header("⭐ 我的自选股")
     
@@ -501,10 +457,8 @@ def render_watchlist_manager(strategy_mode, custom_short, custom_long):
         if c2.button("立即添加", type="primary", use_container_width=True):
             if raw_input:
                 safe_code = smart_format_code(raw_input)
-                # 🔥 调用新浪获取中文名
-                with st.spinner(f"正在向新浪财经查询 {safe_code}..."):
+                with st.spinner(f"正在识别 {safe_code}..."):
                     auto_name = fetch_stock_name(safe_code)
-                
                 st.session_state.my_watchlist[auto_name] = safe_code
                 st.success(f"已添加: {auto_name} ({safe_code})")
                 st.rerun()
@@ -542,7 +496,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 策略选择 (统一管理)
     strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
     
     custom_short = 5
