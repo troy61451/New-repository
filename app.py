@@ -96,13 +96,17 @@ def get_google_news(query, lang='zh-CN'):
         print(f"Google RSS Error: {e}")
         return [], 0
 
+# 🔥 升级版新闻引擎 (含财联社)
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
+    
     if is_cn_stock:
+        # A股：使用 Google News 搜中文名
         search_term = name.split('(')[0] 
         news_items, avg = get_google_news(search_term, 'zh-CN')
         source_type = "Google (A股)"
     else:
+        # 美股
         try:
             news_list = yf.Ticker(ticker).news
             if news_list:
@@ -126,7 +130,13 @@ def get_news_and_sentiment(ticker, name):
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
         market = "SH" if ticker.endswith('.SS') else "SZ"
-        links = {"xueqiu": f"https://xueqiu.com/S/{market}{pure_code}", "eastmoney": f"http://quote.eastmoney.com/{market.lower()}{pure_code}.html"}
+        
+        # 🔥 生成三大平台链接
+        links = {
+            "xueqiu": f"https://xueqiu.com/S/{market}{pure_code}",
+            "eastmoney": f"http://quote.eastmoney.com/{market.lower()}{pure_code}.html",
+            "cls": f"https://www.cls.cn/searchPage?keyword={pure_code}"  # 财联社搜索页
+        }
         
     return news_items, avg, source_type, links
 
@@ -357,7 +367,6 @@ def render_500():
     st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
     st.dataframe(df, use_container_width=True)
 
-# 🔥 缺失的函数补回来了
 def render_backtest():
     st.header("⏳ 策略时光机")
     st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
@@ -368,23 +377,30 @@ def render_backtest():
     if st.button("🚀 开始回测", type="primary"):
         run_backtest(pool, start, end)
 
+# 🔥 升级版舆情雷达 (含财联社)
 def render_news():
     st.header("📰 双语舆情雷达")
+    st.info("💡 系统会自动识别：A股代码 → 雪球/东财/财联社 | 美股/全球 → Yahoo/Google")
+    
     all_options = {**ASSETS_GLOBAL, **ASSETS_CN}
     asset_list = [f"{k} | {v}" for k,v in all_options.items()]
     selected_asset = st.selectbox("🔍 选择资产:", asset_list)
+    
     if selected_asset:
         name = selected_asset.split(" | ")[0]
         code = selected_asset.split(" | ")[1]
+        
         if st.button("📡 扫描舆情", type="primary"):
             with st.spinner("正在聚合全网新闻..."):
                 news_items, avg, source_type, links = get_news_and_sentiment(code, name)
                 
                 if links:
                     st.success(f"✅ {name} 社区讨论区已定位")
-                    col1, col2 = st.columns(2)
-                    with col1: st.link_button("❄️ 跳转雪球 (推荐)", links['xueqiu'])
-                    with col2: st.link_button("🇨🇳 跳转东方财富", links['eastmoney'])
+                    # 🔥 布局改为 3 列，加入财联社
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.link_button("❄️ 雪球讨论", links['xueqiu'])
+                    with c2: st.link_button("🇨🇳 东财资讯", links['eastmoney'])
+                    with c3: st.link_button("⚡ 财联社电报", links['cls'])
                     st.markdown("---")
 
                 if not news_items:
