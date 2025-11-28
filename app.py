@@ -228,8 +228,9 @@ def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
         st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker}_{datetime.now().microsecond}")
     except: st.error("K线图加载失败，请刷新")
 
+# 🔥 升级版全量计算引擎 (一次算出所有指标)
 @st.cache_data(ttl=3600) 
-def fetch_and_calculate(asset_dict, mode, **kwargs):
+def fetch_and_calculate(asset_dict, strategy_mode, custom_short, custom_long):
     tickers = list(asset_dict.values())
     try:
         data = yf.download(tickers, period="2y", progress=False, threads=False)
@@ -247,8 +248,10 @@ def fetch_and_calculate(asset_dict, mode, **kwargs):
             try:
                 if code not in df_close.columns: continue
                 s = df_close[code].dropna()
-                required_len = kwargs.get('long_w', 61)
+                # 至少需要最长的数据长度
+                required_len = max(61, custom_long + 1)
                 if len(s) < required_len: continue
+                
                 curr_price = s.iloc[-1]
                 prev_price = s.iloc[-2]
                 daily_pct = (curr_price - prev_price) / prev_price
@@ -256,26 +259,37 @@ def fetch_and_calculate(asset_dict, mode, **kwargs):
                 if not df_vol.empty and code in df_vol.columns:
                     curr_vol = df_vol[code].iloc[-1]
 
-                base_data = {"name": name, "code": code, "price": curr_price, "daily_pct": daily_pct, "volume": curr_vol}
+                # --- 1. 计算动量 ---
+                val_mom = (curr_price - s.iloc[-21]) / s.iloc[-21] * 100
                 
-                if mode == "MOM":
-                    val = (curr_price - s.iloc[-21]) / s.iloc[-21] * 100
-                    base_data["value"] = val
-                elif mode == "MA":
-                    ma20 = s.rolling(20).mean().iloc[-1]; ma60 = s.rolling(60).mean().iloc[-1]
-                    gap = (ma20 - ma60) / ma60 * 100
-                    base_data.update({"ma20":ma20, "ma60":ma60, "value":gap})
-                elif mode == "RSI":
-                    delta = s.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    rs = gain / loss; rsi = 100 - (100 / (1 + rs))
-                    base_data["value"] = rsi.iloc[-1]
-                elif mode == "CUSTOM":
-                    sw, lw = kwargs['short_w'], kwargs['long_w']
-                    ms = s.rolling(sw).mean().iloc[-1]; ml = s.rolling(lw).mean().iloc[-1]
-                    gap = (ms - ml) / ml * 100
-                    base_data.update({"short":ms, "long":ml, "value":gap})
+                # --- 2. 计算双均线 (MA20/60) ---
+                ma20 = s.rolling(20).mean().iloc[-1]
+                ma60 = s.rolling(60).mean().iloc[-1]
+                val_ma = (ma20 - ma60) / ma60 * 100
                 
-                results.append(base_data)
+                # --- 3. 计算 RSI ---
+                delta = s.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                val_rsi = 100 - (100 / (1 + rs)).iloc[-1]
+                
+                # --- 4. 计算自定义均线 ---
+                ms = s.rolling(custom_short).mean().iloc[-1]
+                ml = s.rolling(custom_long).mean().iloc[-1]
+                val_custom = (ms - ml) / ml * 100
+
+                # 决定排序用的 value
+                sort_val = val_mom # 默认
+                if "RSI" in strategy_mode: sort_val = val_rsi
+                elif "双均线" in strategy_mode: sort_val = val_ma
+                elif "自定义" in strategy_mode: sort_val = val_custom
+
+                results.append({
+                    "name": name, "code": code, "price": curr_price, "daily_pct": daily_pct, "volume": curr_vol,
+                    "val_mom": val_mom, "val_ma": val_ma, "val_rsi": val_rsi, "val_custom": val_custom,
+                    "value": sort_val # 用于排序
+                })
             except: pass
         return pd.DataFrame(results)
     except: return pd.DataFrame()
@@ -318,16 +332,15 @@ def run_backtest_logic(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# 🔥 核心升级：自定义列表渲染 (UI 2.0 版)
+# 🔥 核心升级：包含所有策略指标的下拉框
 def render_clickable_list(df, tab_key, strategy_mode):
-    # 状态管理：记录选中的代码
+    # 状态管理
     state_key = f"selected_code_{tab_key}"
     if state_key not in st.session_state:
         st.session_state[state_key] = df.iloc[0]['code'] if not df.empty else None
 
-    # 表头
     cols = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
-    headers = ["📌 名称", "代码", "现价", "今日涨跌", "成交量", "策略信号"]
+    headers = ["📌 名称", "代码", "现价", "今日涨跌", "成交量", "📊 多维策略"]
     for col, h in zip(cols, headers):
         col.markdown(f"**{h}**")
     st.markdown("---")
@@ -336,17 +349,14 @@ def render_clickable_list(df, tab_key, strategy_mode):
     for i, row in df.iterrows():
         c = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
         
-        # 🔥 按钮交互逻辑优化
-        # 只有选中的那个按钮变成“Primary”颜色 (红色/主题色)，其他的是“Secondary” (灰色)
         btn_type = "secondary"
         if st.session_state[state_key] == row['code']:
             btn_type = "primary"
-            target_row = row # 锁定数据
+            target_row = row 
             
-        # use_container_width=True 让按钮填满，看起来整齐划一
         if c[0].button(row['name'], key=f"btn_{tab_key}_{row['code']}", type=btn_type, use_container_width=True):
             st.session_state[state_key] = row['code']
-            st.rerun() # 点击刷新
+            st.rerun() 
             
         c[1].caption(row['code'])
         c[2].write(f"{row['price']:.2f}")
@@ -361,42 +371,45 @@ def render_clickable_list(df, tab_key, strategy_mode):
         else: vol_str = str(vol)
         c[4].caption(vol_str)
         
-        val = row['value']
-        s_color = "gray"
-        if "RSI" in strategy_mode:
-            if val < 30: s_color = "red" 
-            elif val > 70: s_color = "green" 
-        elif "动量" in strategy_mode:
-            if val > 0: s_color = "red"
-            else: s_color = "green"
-        c[5].markdown(f":{s_color}[{val:.2f}]")
+        # 🔥 最后一列：策略下拉菜单
+        # 构造选项列表
+        options = [
+            f"🚀 动量: {row['val_mom']:.2f}%",
+            f"🌊 RSI: {row['val_rsi']:.2f}",
+            f"⚔️ 双均线: {row['val_ma']:.2f}%",
+            f"🛠️ 自定义: {row['val_custom']:.2f}%"
+        ]
+        # 根据当前模式自动选择默认项
+        idx = 0
+        if "RSI" in strategy_mode: idx = 1
+        elif "双均线" in strategy_mode: idx = 2
+        elif "自定义" in strategy_mode: idx = 3
+        
+        c[5].selectbox("策略详情", options, index=idx, key=f"sel_sig_{tab_key}_{row['code']}", label_visibility="collapsed")
     
     st.markdown("---")
     return target_row
 
-# --- 页面渲染函数 (适配新列表) ---
+# --- 页面渲染函数 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     if "自定义" in strategy_mode:
-        with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
+        with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=False
     elif "双均线" in strategy_mode:
-        with st.spinner("计算均线..."): df = fetch_and_calculate(assets, "MA", long_w=60); asc=False
+        with st.spinner("计算均线..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=False
     elif "RSI" in strategy_mode:
-        with st.spinner("计算RSI..."): df = fetch_and_calculate(assets, "RSI"); asc=True
+        with st.spinner("计算RSI..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True
     else:
-        with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
+        with st.spinner("计算动量..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据"); return
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     
-    # 使用新列表渲染
     target_row = render_clickable_list(df, tab_key, strategy_mode)
     
-    # 选中后画图
     if target_row is not None:
         st.subheader(f"📈 {target_row['name']} ({target_row['code']}) 走势")
         plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
     
-    # 底部只需保留全量下载
     csv = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 下载列表数据", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
 
