@@ -318,59 +318,49 @@ def run_backtest_logic(pool_name, start_date, end_date):
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
 
-# 🔥 核心升级：自定义列表渲染函数 (仿东方财富列表)
+# 🔥 核心升级：自定义列表渲染 (UI 2.0 版)
 def render_clickable_list(df, tab_key, strategy_mode):
-    # 1. 状态管理：记录当前选中的是哪只股票
+    # 状态管理：记录选中的代码
     state_key = f"selected_code_{tab_key}"
     if state_key not in st.session_state:
-        # 默认选中第一个
         st.session_state[state_key] = df.iloc[0]['code'] if not df.empty else None
 
-    # 2. 绘制表头
+    # 表头
     cols = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
-    headers = ["📌 名称 (点击)", "代码", "现价", "今日涨跌", "成交量", "策略信号"]
+    headers = ["📌 名称", "代码", "现价", "今日涨跌", "成交量", "策略信号"]
     for col, h in zip(cols, headers):
         col.markdown(f"**{h}**")
-    
     st.markdown("---")
 
-    # 3. 循环绘制每一行 (Button代替文字)
-    target_row = None # 用于存储选中的行数据
-    
+    target_row = None
     for i, row in df.iterrows():
         c = st.columns([1.5, 1.2, 1, 1.2, 1.2, 1.5])
         
-        # Col 1: 股票名称按钮
-        # 技巧：如果该行是被选中的，按钮前面加个红点提示
-        label = row['name']
+        # 🔥 按钮交互逻辑优化
+        # 只有选中的那个按钮变成“Primary”颜色 (红色/主题色)，其他的是“Secondary” (灰色)
+        btn_type = "secondary"
         if st.session_state[state_key] == row['code']:
-            label = f"🔴 {label}" 
-            target_row = row # 锁定当前要画图的数据
+            btn_type = "primary"
+            target_row = row # 锁定数据
             
-        # 🔥 点击按钮逻辑
-        if c[0].button(label, key=f"btn_{tab_key}_{row['code']}"):
+        # use_container_width=True 让按钮填满，看起来整齐划一
+        if c[0].button(row['name'], key=f"btn_{tab_key}_{row['code']}", type=btn_type, use_container_width=True):
             st.session_state[state_key] = row['code']
-            st.rerun() # 立即刷新，更新下方图表
+            st.rerun() # 点击刷新
             
-        # Col 2: 代码
         c[1].caption(row['code'])
-        
-        # Col 3: 现价
         c[2].write(f"{row['price']:.2f}")
         
-        # Col 4: 涨跌幅 (红涨绿跌)
         pct = row['daily_pct'] * 100
         color = "red" if pct >= 0 else "green"
         c[3].markdown(f":{color}[{pct:.2f}%]")
         
-        # Col 5: 成交量 (自动换算万/亿)
         vol = row['volume']
         if vol > 100000000: vol_str = f"{vol/100000000:.2f}亿"
         elif vol > 10000: vol_str = f"{vol/10000:.0f}万"
         else: vol_str = str(vol)
         c[4].caption(vol_str)
         
-        # Col 6: 策略信号 (根据不同模式显示不同颜色)
         val = row['value']
         s_color = "gray"
         if "RSI" in strategy_mode:
@@ -379,7 +369,6 @@ def render_clickable_list(df, tab_key, strategy_mode):
         elif "动量" in strategy_mode:
             if val > 0: s_color = "red"
             else: s_color = "green"
-        
         c[5].markdown(f":{s_color}[{val:.2f}]")
     
     st.markdown("---")
@@ -397,21 +386,19 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据"); return
-    
-    # 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     
-    # 🔥 调用新的列表渲染函数
+    # 使用新列表渲染
     target_row = render_clickable_list(df, tab_key, strategy_mode)
     
-    # 绘制选中行的图表
+    # 选中后画图
     if target_row is not None:
         st.subheader(f"📈 {target_row['name']} ({target_row['code']}) 走势")
         plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
     
-    # 下载按钮
+    # 底部只需保留全量下载
     csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 下载本页数据", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
+    st.download_button("📥 下载列表数据", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
 
 def render_500(strategy_mode, custom_short, custom_long):
     df = load_csi500_rank()
