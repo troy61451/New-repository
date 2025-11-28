@@ -60,22 +60,51 @@ ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 # 智能代码转换器
 def smart_format_code(raw_code):
     code = raw_code.strip().upper()
-    if "." in code: return code # 已经是标准格式
+    if "." in code: return code 
     if code.isdigit():
-        if len(code) == 6: # A股
+        if len(code) == 6: 
             if code.startswith(('60', '68', '51', '58')): return f"{code}.SS"
             else: return f"{code}.SZ"
-        elif len(code) <= 5: # 港股
+        elif len(code) <= 5: 
             return f"{int(code):04d}.HK"
-    return code # 美股或其他
+    return code 
 
-# 🔥 新增：自动获取股票名称
+# 🔥 核心升级：优先使用新浪财经获取中文名
 def fetch_stock_name(symbol):
     try:
+        # 1. 尝试 A股 (新浪接口极快且支持中文)
+        if symbol.endswith(".SS") or symbol.endswith(".SZ"):
+            market = "sh" if symbol.endswith(".SS") else "sz"
+            code = symbol.replace(".SS", "").replace(".SZ", "")
+            # 新浪行情接口
+            r = requests.get(f"http://hq.sinajs.cn/list={market}{code}", timeout=2)
+            # 返回格式: var hq_str_sh600519="贵州茅台,..."
+            if "=\"" in r.text:
+                content = r.text.split("=\"")[1]
+                if len(content) > 1:
+                    name = content.split(",")[0]
+                    # 处理可能的乱码 (新浪通常是GBK)
+                    try:
+                        # 如果requests没自动解码，手动尝试
+                        return name
+                    except:
+                        pass
+                    return name
+
+        # 2. 尝试 港股
+        if symbol.endswith(".HK"):
+            code = symbol.replace(".HK", "")
+            r = requests.get(f"http://hq.sinajs.cn/list=hk{code}", timeout=2)
+            if "=\"" in r.text:
+                content = r.text.split("=\"")[1]
+                if len(content) > 1:
+                    name = content.split(",")[1] # 港股名称在第二个字段
+                    return name
+
+        # 3. 美股或其他：回退到 Yahoo
         t = yf.Ticker(symbol)
-        # 尝试获取简称，如果失败则返回代码本身
-        name = t.info.get('shortName') or t.info.get('longName') or symbol
-        return name
+        return t.info.get('shortName') or t.info.get('longName') or symbol
+        
     except:
         return symbol
 
@@ -398,25 +427,21 @@ def render_news():
                             st.write(f"情感: {n['score']:.2f}")
                             st.markdown(f"[阅读原文]({n['link']})")
 
-# 🔥 极简自选股管理器 (单输入框)
+# 🔥 极简自选股管理器
 def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     st.header("⭐ 我的自选股")
     
     with st.expander("➕ 添加新资产", expanded=True):
         c1, c2 = st.columns([3, 1])
-        # 🔥 只有一个输入框
-        raw_input = c1.text_input("请输入代码或美股Symbol (如 600519, 0700, AAPL)", placeholder="例如：600519")
+        raw_input = c1.text_input("请输入代码或美股Symbol (如 002466, 0700, AAPL)", placeholder="例如：002466")
         
         if c2.button("立即添加", type="primary", use_container_width=True):
             if raw_input:
-                # 1. 智能格式化代码
                 safe_code = smart_format_code(raw_input)
-                
-                # 2. 尝试自动获取名称 (带Loading动画)
-                with st.spinner(f"正在识别 {safe_code} ..."):
+                # 🔥 调用新浪获取中文名
+                with st.spinner(f"正在向新浪财经查询 {safe_code}..."):
                     auto_name = fetch_stock_name(safe_code)
                 
-                # 3. 存入 Session
                 st.session_state.my_watchlist[auto_name] = safe_code
                 st.success(f"已添加: {auto_name} ({safe_code})")
                 st.rerun()
@@ -454,7 +479,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 策略选择 (统一管理)
     strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
     
     custom_short = 5
