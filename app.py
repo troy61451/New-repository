@@ -186,7 +186,6 @@ def get_news_and_sentiment(ticker, name):
 # --- 数据计算引擎 ---
 def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
     try:
-        # 强制下载数据
         df = yf.download(ticker, period="2y", progress=False, threads=False)
         if df.empty: st.warning("暂无K线数据"); return
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -226,46 +225,79 @@ def plot_pro_chart(ticker, name, strategy_mode, custom_short=5, custom_long=20):
         fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1月", step="month", stepmode="backward"), dict(count=6, label="半年", step="month", stepmode="backward"), dict(step="all", label="全部")]), bgcolor="#333", activecolor="#555", font=dict(color="white")), row=1, col=1)
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#222'); fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])])
         
-        # 🔥 关键修复：给图表加上唯一的 key，强制 Streamlit 重新渲染
         st.plotly_chart(fig, use_container_width=True, key=f"chart_{ticker}_{datetime.now().microsecond}")
-        
     except: st.error("K线图加载失败，请刷新")
 
+# 🔥 升级版数据获取：增加【今日涨跌】和【成交量】
 @st.cache_data(ttl=3600) 
 def fetch_and_calculate(asset_dict, mode, **kwargs):
     tickers = list(asset_dict.values())
     try:
+        # 获取完整数据 (包含 Open, High, Low, Close, Volume)
         data = yf.download(tickers, period="2y", progress=False, threads=False)
+        
         if data.empty: return pd.DataFrame()
+        
+        # 提取 Close 和 Volume
         if 'Close' in data: df_close = data['Close']
         else: df_close = data
+        
+        # 处理 Volume (兼容性处理)
+        df_vol = pd.DataFrame()
+        if 'Volume' in data: df_vol = data['Volume']
+
+        # 兼容单资产 Series
         if isinstance(df_close, pd.Series): df_close = df_close.to_frame(name=tickers[0])
+        if isinstance(df_vol, pd.Series): df_vol = df_vol.to_frame(name=tickers[0])
 
         results = []
         for name, code in asset_dict.items():
             try:
                 if code not in df_close.columns: continue
+                
                 s = df_close[code].dropna()
                 required_len = kwargs.get('long_w', 61)
                 if len(s) < required_len: continue
-                curr_price = s.iloc[-1]
                 
+                curr_price = s.iloc[-1]
+                prev_price = s.iloc[-2]
+                
+                # 🔥 计算今日涨跌幅
+                daily_pct = (curr_price - prev_price) / prev_price
+                
+                # 🔥 获取今日成交量 (如果存在)
+                curr_vol = 0
+                if not df_vol.empty and code in df_vol.columns:
+                    curr_vol = df_vol[code].iloc[-1]
+
+                # 基础数据包
+                base_data = {
+                    "name": name, 
+                    "code": code, 
+                    "price": curr_price,
+                    "daily_pct": daily_pct,  # 新增：今日涨幅
+                    "volume": curr_vol       # 新增：成交量
+                }
+                
+                # 策略计算逻辑
                 if mode == "MOM":
                     val = (curr_price - s.iloc[-21]) / s.iloc[-21] * 100
-                    results.append({"name":name, "code":code, "price":curr_price, "value":val})
+                    base_data["value"] = val
                 elif mode == "MA":
                     ma20 = s.rolling(20).mean().iloc[-1]; ma60 = s.rolling(60).mean().iloc[-1]
                     gap = (ma20 - ma60) / ma60 * 100
-                    results.append({"name":name, "code":code, "price":curr_price, "ma20":ma20, "ma60":ma60, "value":gap})
+                    base_data.update({"ma20":ma20, "ma60":ma60, "value":gap})
                 elif mode == "RSI":
                     delta = s.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
                     rs = gain / loss; rsi = 100 - (100 / (1 + rs))
-                    results.append({"name":name, "code":code, "price":curr_price, "value":rsi.iloc[-1]})
+                    base_data["value"] = rsi.iloc[-1]
                 elif mode == "CUSTOM":
                     sw, lw = kwargs['short_w'], kwargs['long_w']
                     ms = s.rolling(sw).mean().iloc[-1]; ml = s.rolling(lw).mean().iloc[-1]
                     gap = (ms - ml) / ml * 100
-                    results.append({"name":name, "code":code, "price":curr_price, "short":ms, "long":ml, "value":gap})
+                    base_data.update({"short":ms, "long":ml, "value":gap})
+                
+                results.append(base_data)
             except: pass
         return pd.DataFrame(results)
     except: return pd.DataFrame()
@@ -310,6 +342,7 @@ def run_backtest_logic(pool_name, start_date, end_date):
 
 # --- 页面渲染函数 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
+    # 1. 计算数据
     if "自定义" in strategy_mode:
         with st.spinner("计算中..."): df = fetch_and_calculate(assets, "CUSTOM", short_w=custom_short, long_w=custom_long); asc=False
     elif "双均线" in strategy_mode:
@@ -320,26 +353,70 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
     if df.empty: st.warning("暂无数据，请重试"); return
+    
+    # 2. 排序
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     df.index += 1
     
+    # 🔥 3. 显示全景行情列表 (Dataframe)
+    st.subheader("📋 实时行情总览")
+    
+    # 构造展示用的 DataFrame
+    df_display = df.copy()
+    
+    # 根据不同策略显示不同的"信号列"名称
+    signal_col = "策略数值"
+    if "RSI" in strategy_mode: signal_col = "RSI (低买高卖)"
+    elif "动量" in strategy_mode: signal_col = "20日涨幅%"
+    elif "双均线" in strategy_mode: signal_col = "均线乖离%"
+    
+    # 重命名列以便展示
+    df_display = df_display.rename(columns={
+        "name": "名称",
+        "code": "代码",
+        "price": "现价",
+        "daily_pct": "今日涨跌",
+        "volume": "成交量",
+        "value": signal_col
+    })
+    
+    # 选择要展示的列
+    cols_to_show = ["名称", "代码", "现价", "今日涨跌", "成交量", signal_col]
+    
+    # 使用 Streamlit 的高级 Column Config 来美化表格
+    st.dataframe(
+        df_display[cols_to_show],
+        use_container_width=True,
+        column_config={
+            "现价": st.column_config.NumberColumn(format="¥%.2f"),
+            "今日涨跌": st.column_config.NumberColumn(format="%.2f%%"), # 显示百分比
+            "成交量": st.column_config.NumberColumn(format="%d"),
+            signal_col: st.column_config.ProgressColumn(
+                format="%.2f",
+                min_value=-100 if "RSI" not in strategy_mode else 0,
+                max_value=100,
+            ),
+        }
+    )
+    
+    st.markdown("---")
+
+    # 4. 下拉选择查看详情 (保持原有功能)
     select_options = [f"{i} . {row['name']} | {row['code']}" for i, row in df.iterrows()]
-    selected_option = st.selectbox("👉 选择资产查看详情:", select_options, key=f"sel_{tab_key}")
+    selected_option = st.selectbox("👉 选择资产查看 K 线 & 信号:", select_options, key=f"sel_{tab_key}")
     selected_index = select_options.index(selected_option)
     target_row = df.iloc[selected_index]
     
     c1, c2, c3 = st.columns(3)
     c1.metric(target_row['name'], target_row['code'])
-    c2.metric("当前价", f"{target_row['price']:.2f}")
-    c3.metric("指标值", f"{target_row['value']:.2f}")
-    st.markdown("---")
+    
+    # 显示今日涨跌颜色
+    pct = target_row['daily_pct'] * 100
+    c2.metric("今日涨跌", f"{pct:.2f}%", f"{pct:.2f}%")
+    c3.metric(signal_col, f"{target_row['value']:.2f}")
+    
     st.subheader(f"📈 {target_row['name']} 走势")
-    # 🔥 调用图表时传递了唯一key
     plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
-    st.markdown("---")
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 下载数据", csv, "data.csv", "text/csv", key=f"btn_{tab_key}")
-    st.dataframe(df, use_container_width=True)
 
 def render_500(strategy_mode, custom_short, custom_long):
     df = load_csi500_rank()
