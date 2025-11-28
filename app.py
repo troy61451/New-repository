@@ -14,115 +14,120 @@ from textblob import TextBlob
 from snownlp import SnowNLP 
 
 # ==========================================
-# 0. 用户认证系统 (🔥 新增核心模块)
+# 0. 用户数据管理系统 (🔥 核心升级: 用户隔离)
 # ==========================================
-USER_DB_FILE = "users.json"
+DATA_FILE = "user_data.json" # 存储所有用户的密码和自选股
 
-class UserManager:
+class DataManager:
     def __init__(self):
         self._ensure_db_exists()
 
     def _ensure_db_exists(self):
-        if not os.path.exists(USER_DB_FILE):
-            with open(USER_DB_FILE, 'w') as f:
+        if not os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'w') as f:
                 json.dump({}, f)
 
-    def _load_users(self):
+    def _load_all_data(self):
         try:
-            with open(USER_DB_FILE, 'r') as f:
+            with open(DATA_FILE, 'r') as f:
                 return json.load(f)
         except: return {}
 
-    def _save_users(self, users):
-        with open(USER_DB_FILE, 'w') as f:
-            json.dump(users, f)
+    def _save_all_data(self, data):
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
 
     def _hash_password(self, password):
         return hashlib.sha256(password.encode()).hexdigest()
 
+    # 注册：初始化空自选股
     def register(self, username, password):
-        users = self._load_users()
-        if username in users:
+        data = self._load_all_data()
+        if username in data:
             return False, "用户已存在"
-        users[username] = self._hash_password(password)
-        self._save_users(users)
+        
+        data[username] = {
+            "password": self._hash_password(password),
+            "watchlist": {} # 🔥 每个用户独立的自选股
+        }
+        self._save_all_data(data)
         return True, "注册成功，请登录"
 
+    # 登录：返回用户的自选股数据
     def login(self, username, password):
-        users = self._load_users()
-        if username not in users:
-            return False
-        if users[username] == self._hash_password(password):
-            return True
-        return False
+        data = self._load_all_data()
+        if username not in data:
+            return False, None
+        
+        if data[username]["password"] == self._hash_password(password):
+            # 登录成功，返回该用户的 watchlist
+            return True, data[username].get("watchlist", {})
+        return False, None
+
+    # 保存自选股：实时写入文件
+    def save_user_watchlist(self, username, watchlist):
+        data = self._load_all_data()
+        if username in data:
+            data[username]["watchlist"] = watchlist
+            self._save_all_data(data)
+
+# 初始化管理器
+data_manager = DataManager()
 
 # ==========================================
 # 1. 基础配置 & 状态管理
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
+# Session 初始化
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
-
-# ==========================================
-# 2. 登录/注册 页面逻辑
-# ==========================================
-def render_login_page():
-    st.markdown("<h1 style='text-align: center;'>🔐 全能操盘手 - 安全入口</h1>", unsafe_allow_html=True)
-    
-    tab1, tab2 = st.tabs(["🔑 登录", "📝 注册新用户"])
-    
-    manager = UserManager()
-
-    with tab1: # 登录页
-        with st.form("login_form"):
-            user = st.text_input("用户名")
-            pwd = st.text_input("密码", type="password")
-            submit = st.form_submit_button("立即登录", type="primary")
-            
-            if submit:
-                if manager.login(user, pwd):
-                    st.session_state.logged_in = True
-                    st.session_state.current_user = user
-                    st.success("登录成功！跳转中...")
-                    st.rerun()
-                else:
-                    st.error("用户名或密码错误")
-
-    with tab2: # 注册页
-        with st.form("register_form"):
-            new_user = st.text_input("设置用户名")
-            new_pwd = st.text_input("设置密码", type="password")
-            confirm_pwd = st.text_input("确认密码", type="password")
-            submit_reg = st.form_submit_button("注册")
-            
-            if submit_reg:
-                if new_pwd != confirm_pwd:
-                    st.error("两次输入的密码不一致")
-                elif not new_user or not new_pwd:
-                    st.error("用户名和密码不能为空")
-                else:
-                    success, msg = manager.register(new_user, new_pwd)
-                    if success:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
-
-# ==========================================
-# 3. 核心功能函数 (保留之前的逻辑)
-# ==========================================
 if 'my_watchlist' not in st.session_state:
-    st.session_state.my_watchlist = {
-        "贵州茅台": "600519.SS",
-        "腾讯控股": "0700.HK",
-        "英伟达": "NVDA"
-    }
+    st.session_state.my_watchlist = {} 
 if 'custom_assets' not in st.session_state:
     st.session_state.custom_assets = {}
 
-# 资产池定义
+# ==========================================
+# 2. 登录/注册 页面
+# ==========================================
+def render_login_page():
+    st.markdown("<h1 style='text-align: center;'>🔐 全能操盘手 - 安全入口</h1>", unsafe_allow_html=True)
+    tab1, tab2 = st.tabs(["🔑 登录", "📝 注册"])
+    
+    with tab1:
+        with st.form("login"):
+            user = st.text_input("用户名")
+            pwd = st.text_input("密码", type="password")
+            if st.form_submit_button("登录", type="primary"):
+                success, user_watchlist = data_manager.login(user, pwd)
+                if success:
+                    st.session_state.logged_in = True
+                    st.session_state.current_user = user
+                    # 🔥 关键：登录时加载该用户的专属自选股
+                    st.session_state.my_watchlist = user_watchlist
+                    st.success("欢迎回来！")
+                    st.rerun()
+                else:
+                    st.error("账号或密码错误")
+
+    with tab2:
+        with st.form("reg"):
+            new_user = st.text_input("新用户名")
+            new_pwd = st.text_input("新密码", type="password")
+            if st.form_submit_button("注册"):
+                if new_user and new_pwd:
+                    ok, msg = data_manager.register(new_user, new_pwd)
+                    if ok: st.success(msg)
+                    else: st.error(msg)
+                else: st.error("请填写完整")
+
+# ==========================================
+# 3. 核心业务逻辑 (复用之前完美的架构)
+# ==========================================
+
+# 资产池
 DEFAULT_ASSETS_GLOBAL = {
     "纳指ETF(美成长)": "513100.SS", "标普500(美大盘)": "513500.SS",
     "日经ETF(日本)": "513520.SS", "德国ETF(欧洲)": "513030.SS",
@@ -417,20 +422,133 @@ def render_clickable_list(df, tab_key, strategy_mode):
     st.markdown("---")
     return target_row
 
+# --- 页面渲染函数 ---
+def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
+    with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if ("RSI" in strategy_mode) or ("超跌" in strategy_mode) else False
+    if df.empty: st.warning("暂无数据"); return
+    df = df.sort_values("value", ascending=asc).reset_index(drop=True)
+    
+    target_row = render_clickable_list(df, tab_key, strategy_mode)
+    
+    if target_row is not None:
+        st.subheader(f"📈 {target_row['name']} ({target_row['code']}) 走势")
+        plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
+    
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载列表", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
+
+def render_500(strategy_mode, custom_short, custom_long):
+    df = load_csi500_rank()
+    if df.empty: st.warning("后台生成中..."); return
+    top = df.iloc[0]
+    st.success(f"🚀 冠军: **{top['名称']}** ({top['代码']})")
+    c1,c2,c3 = st.columns(3)
+    c1.metric("涨幅", f"{top['20日涨幅']}%"); c2.metric("价格", f"{top['当前价']}"); c3.metric("来源", "后台")
+    st.markdown("---")
+    opts = [f"{r['代码']} | {r['名称']}" for i,r in df.head(20).iterrows()]
+    sel = st.selectbox("选择股票:", opts)
+    if sel:
+        code = sel.split(" | ")[0]
+        name = sel.split(" | ")[1]
+        plot_pro_chart(code, name, strategy_mode, custom_short, custom_long)
+    st.markdown("---")
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
+    st.dataframe(df, use_container_width=True)
+
+def render_backtest():
+    st.header("⏳ 策略时光机")
+    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
+    c1, c2, c3 = st.columns(3)
+    pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
+    start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
+    end = c3.date_input("结束日期", value=datetime.today())
+    if st.button("🚀 开始回测", type="primary"):
+        run_backtest_logic(pool, start, end)
+
+def render_news():
+    st.header("📰 双语舆情雷达")
+    all_options = {**ASSETS_GLOBAL, **ASSETS_CN, **st.session_state.my_watchlist} 
+    asset_list = [f"{k} | {v}" for k,v in all_options.items()]
+    selected_asset = st.selectbox("🔍 选择资产:", asset_list)
+    if selected_asset:
+        name = selected_asset.split(" | ")[0]
+        code = selected_asset.split(" | ")[1]
+        if st.button("📡 扫描舆情", type="primary"):
+            with st.spinner("正在聚合全网新闻..."):
+                news_items, avg, source_type, links = get_news_and_sentiment(code, name)
+                if links:
+                    st.success(f"✅ {name} 社区讨论区已定位")
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.link_button("❄️ 雪球", links['xueqiu'])
+                    with c2: st.link_button("🇨🇳 东财", links['eastmoney'])
+                    with c3: st.link_button("⚡ 财联社", links['cls'])
+                    with c4: st.link_button("📈 同花顺", links['10jqka'])
+                    st.markdown("---")
+                if not news_items:
+                    st.warning(f"⚠️ {source_type} 暂未收录最新报道")
+                    google_url = f"https://www.google.com/search?q={name}+stock+news&tbm=nws"
+                    st.link_button("🔍 Google搜索兜底", google_url)
+                else:
+                    st.caption(f"数据来源: {source_type}")
+                    c1, c2 = st.columns(2)
+                    c1.metric("新闻条数", len(news_items))
+                    emoji = "😐"
+                    if avg > 0.1: emoji = "😄 (利好)"
+                    elif avg < -0.1: emoji = "😨 (利空)"
+                    c2.metric("情感得分", f"{avg:.2f}", emoji)
+                    st.markdown("---")
+                    for n in news_items:
+                        color = "gray"
+                        if n['score'] > 0.1: color = "green"
+                        if n['score'] < -0.1: color = "red"
+                        with st.expander(f":{color}[{n['title']}]"):
+                            st.write(f"时间: {n['time']} | 来源: {n['source']}")
+                            st.write(f"情感: {n['score']:.2f}")
+                            st.markdown(f"[阅读原文]({n['link']})")
+
+def render_watchlist_manager(strategy_mode, custom_short, custom_long):
+    st.header("⭐ 我的自选股")
+    with st.expander("➕ 添加新资产", expanded=True):
+        c1, c2 = st.columns([3, 1])
+        raw_input = c1.text_input("请输入代码或美股Symbol (如 002466, 0700, AAPL)", placeholder="例如：002466")
+        if c2.button("立即添加", type="primary", use_container_width=True):
+            if raw_input:
+                safe_code = smart_format_code(raw_input)
+                with st.spinner(f"正在识别 {safe_code}..."):
+                    auto_name = fetch_stock_name(safe_code)
+                st.session_state.my_watchlist[auto_name] = safe_code
+                # 🔥 关键修改：添加后自动保存到文件
+                data_manager.save_user_watchlist(st.session_state.current_user, st.session_state.my_watchlist)
+                st.success(f"已添加: {auto_name} ({safe_code})")
+                st.rerun()
+            else: st.error("请输入代码")
+
+    if st.session_state.my_watchlist:
+        with st.expander("🗑️ 删除资产", expanded=False):
+            to_delete = st.multiselect("选择要删除的资产:", list(st.session_state.my_watchlist.keys()))
+            if st.button("确认删除选中"):
+                for k in to_delete: del st.session_state.my_watchlist[k]
+                # 🔥 关键修改：删除后自动保存
+                data_manager.save_user_watchlist(st.session_state.current_user, st.session_state.my_watchlist)
+                st.rerun()
+    st.markdown("---")
+    if st.session_state.my_watchlist:
+        render_common(st.session_state.my_watchlist, "watchlist_tab", strategy_mode, custom_short, custom_long)
+    else: st.info("自选列表为空，请先添加资产。")
+
 # ==========================================
-# 6. 主程序应用逻辑 (封装在 main_app 中)
+# 4. 主程序入口
 # ==========================================
 def main_app():
-    # 侧边栏逻辑
     with st.sidebar:
         st.title("🎛️ 操盘控制台")
         st.caption(f"当前用户: {st.session_state.current_user}")
-        
         if st.button("🚪 退出登录"):
             st.session_state.logged_in = False
             st.session_state.current_user = None
+            st.session_state.my_watchlist = {} # 清空内存
             st.rerun()
-            
         st.markdown("---")
         temp = get_market_temperature()
         st.subheader("🌡️ 市场温度")
@@ -439,42 +557,24 @@ def main_app():
         elif temp < 20: st.info(f"🧊 冰点 ({temp:.0f}%)")
         else: st.warning(f"🌤️ 震荡 ({temp:.0f}%)")
         st.markdown("---")
-        
         strategy_mode = st.radio("🎯 策略模式:", ("🚀 动量轮动", "🛡️ 超跌反弹", "⚔️ 双均线金叉", "🌊 RSI震荡", "🛠️ 自定义均线"))
-        
         custom_short = 5; custom_long = 20
         if "自定义" in strategy_mode:
             c1, c2 = st.columns(2)
             with c1: custom_short = st.number_input("短期", 1, 100, 5)
             with c2: custom_long = st.number_input("长期", 2, 300, 30)
-
         st.markdown("---")
         if st.button("🔄 刷新数据", type="primary"):
             st.cache_data.clear()
             st.rerun()
 
-    # 主界面逻辑
     st.title("📊 全能操盘手系统")
-    
-    # 渲染函数定义
-    def render_common_wrapper(assets, tab_key):
-        with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if ("RSI" in strategy_mode) or ("超跌" in strategy_mode) else False
-        if df.empty: st.warning("暂无数据"); return
-        df = df.sort_values("value", ascending=asc).reset_index(drop=True)
-        target_row = render_clickable_list(df, tab_key, strategy_mode)
-        if target_row is not None:
-            st.subheader(f"📈 {target_row['name']} ({target_row['code']}) 走势")
-            plot_pro_chart(target_row['code'], target_row['name'], strategy_mode, custom_short, custom_long)
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 下载列表", csv, "data.csv", "text/csv", key=f"dl_{tab_key}")
-
-    # Tabs
     main_tabs = st.tabs(["⚔️ 策略看板", "📰 舆情雷达", "⭐ 我的自选"])
 
     with main_tabs[0]:
         sub_tabs = st.tabs(["🌍 全球核心", "🇨🇳 行业龙头", "🔥 中证500", "🛠️ 历史回测"])
-        with sub_tabs[0]: render_common_wrapper(ASSETS_GLOBAL, "global")
-        with sub_tabs[1]: render_common_wrapper(ASSETS_CN, "cn")
+        with sub_tabs[0]: render_common(ASSETS_GLOBAL, "global", strategy_mode, custom_short, custom_long)
+        with sub_tabs[1]: render_common(ASSETS_CN, "cn", strategy_mode, custom_short, custom_long)
         with sub_tabs[2]: render_500(strategy_mode, custom_short, custom_long)
         with sub_tabs[3]: render_backtest()
 
@@ -484,9 +584,6 @@ def main_app():
     with main_tabs[2]:
         render_watchlist_manager(strategy_mode, custom_short, custom_long)
 
-# ==========================================
-# 7. 程序入口 (控制登录状态)
-# ==========================================
 if __name__ == "__main__":
     if st.session_state.logged_in:
         main_app()
