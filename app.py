@@ -15,13 +15,15 @@ from snownlp import SnowNLP
 # ==========================================
 st.set_page_config(layout="wide", page_title="全能操盘手系统", page_icon="📈")
 
-# 自选股存储
 if 'my_watchlist' not in st.session_state:
     st.session_state.my_watchlist = {
         "贵州茅台": "600519.SS",
         "腾讯控股": "0700.HK",
         "英伟达": "NVDA"
     }
+
+if 'custom_assets' not in st.session_state:
+    st.session_state.custom_assets = {}
 
 # 名称配置
 NAME_STRATEGY_TAB = "⚔️ 策略看板"
@@ -55,37 +57,27 @@ ASSETS_GLOBAL = {**DEFAULT_ASSETS_GLOBAL, **st.session_state.custom_assets}
 # 2. 核心功能函数
 # ==========================================
 
-# 🔥 新增：智能代码转换器
+# 智能代码转换器
 def smart_format_code(raw_code):
-    """
-    自动识别输入的是哪种代码，并转换为 Yahoo 格式
-    """
     code = raw_code.strip().upper()
-    
-    # 1. 如果已经包含后缀 (如 .SS, .SZ, .HK)，直接返回
-    if "." in code:
-        return code
-        
-    # 2. 纯数字处理
+    if "." in code: return code # 已经是标准格式
     if code.isdigit():
-        # A股逻辑 (6位)
-        if len(code) == 6:
-            # 上海: 60xxxx, 68xxxx (科创), 51xxxx (ETF), 58xxxx (ETF)
-            if code.startswith(('60', '68', '51', '58')):
-                return f"{code}.SS"
-            # 深圳: 00xxxx, 30xxxx (创业), 15xxxx (ETF), 16xxxx (LOF)
-            elif code.startswith(('00', '30', '15', '16')):
-                return f"{code}.SZ"
-            # 北交所目前支持较差，暂不处理或默认加 .SS 试错
-            else:
-                return f"{code}.SS" # 默认策略
-                
-        # 港股逻辑 (3-5位) -> 补齐4位并加 .HK
-        elif len(code) <= 5:
+        if len(code) == 6: # A股
+            if code.startswith(('60', '68', '51', '58')): return f"{code}.SS"
+            else: return f"{code}.SZ"
+        elif len(code) <= 5: # 港股
             return f"{int(code):04d}.HK"
-            
-    # 3. 美股逻辑 (纯字母) -> 保持原样
-    return code
+    return code # 美股或其他
+
+# 🔥 新增：自动获取股票名称
+def fetch_stock_name(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        # 尝试获取简称，如果失败则返回代码本身
+        name = t.info.get('shortName') or t.info.get('longName') or symbol
+        return name
+    except:
+        return symbol
 
 # --- 辅助函数 ---
 @st.cache_data(ttl=3600)
@@ -313,9 +305,7 @@ def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     else:
         with st.spinner("计算动量..."): df = fetch_and_calculate(assets, "MOM"); asc=True if "超跌" in strategy_mode else False
 
-    if df.empty: 
-        st.warning("暂无数据 (可能需要刷新)")
-        return
+    if df.empty: st.warning("暂无数据，请重试"); return
     df = df.sort_values("value", ascending=asc).reset_index(drop=True)
     df.index += 1
     
@@ -408,23 +398,30 @@ def render_news():
                             st.write(f"情感: {n['score']:.2f}")
                             st.markdown(f"[阅读原文]({n['link']})")
 
-# 🔥 智能自选股管理器
+# 🔥 极简自选股管理器 (单输入框)
 def render_watchlist_manager(strategy_mode, custom_short, custom_long):
     st.header("⭐ 我的自选股")
     
-    with st.expander("➕ 添加新资产", expanded=False):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        new_name = c1.text_input("名称 (如: 特变电工)", placeholder="特变电工")
-        new_code = c2.text_input("代码 (如: 600089)", placeholder="600089")
-        if c3.button("添加", type="primary", use_container_width=True):
-            if new_name and new_code:
-                # 🔥 调用智能转换器
-                safe_code = smart_format_code(new_code)
-                st.session_state.my_watchlist[new_name] = safe_code
-                st.success(f"已添加: {new_name} ({safe_code})")
+    with st.expander("➕ 添加新资产", expanded=True):
+        c1, c2 = st.columns([3, 1])
+        # 🔥 只有一个输入框
+        raw_input = c1.text_input("请输入代码或美股Symbol (如 600519, 0700, AAPL)", placeholder="例如：600519")
+        
+        if c2.button("立即添加", type="primary", use_container_width=True):
+            if raw_input:
+                # 1. 智能格式化代码
+                safe_code = smart_format_code(raw_input)
+                
+                # 2. 尝试自动获取名称 (带Loading动画)
+                with st.spinner(f"正在识别 {safe_code} ..."):
+                    auto_name = fetch_stock_name(safe_code)
+                
+                # 3. 存入 Session
+                st.session_state.my_watchlist[auto_name] = safe_code
+                st.success(f"已添加: {auto_name} ({safe_code})")
                 st.rerun()
             else:
-                st.error("请输入名称和代码")
+                st.error("请输入代码")
 
     if st.session_state.my_watchlist:
         with st.expander("🗑️ 删除资产", expanded=False):
@@ -476,7 +473,6 @@ with st.sidebar:
 st.title("📊 全能操盘手系统")
 main_tabs = st.tabs([NAME_STRATEGY_TAB, NAME_NEWS_TAB, NAME_WATCHLIST_TAB])
 
-# 1. 策略看板
 with main_tabs[0]:
     sub_tabs = st.tabs([SUB_NAME_GLOBAL, SUB_NAME_CN, SUB_NAME_500, SUB_NAME_BACKTEST])
     with sub_tabs[0]: render_common(ASSETS_GLOBAL, "global", strategy_mode, custom_short, custom_long)
@@ -484,10 +480,8 @@ with main_tabs[0]:
     with sub_tabs[2]: render_500(strategy_mode, custom_short, custom_long)
     with sub_tabs[3]: render_backtest()
 
-# 2. 舆情雷达
 with main_tabs[1]:
     render_news()
 
-# 3. 我的自选
 with main_tabs[2]:
     render_watchlist_manager(strategy_mode, custom_short, custom_long)
