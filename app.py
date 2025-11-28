@@ -96,9 +96,13 @@ def get_google_news(query, lang='zh-CN'):
 
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
+    
+    # 提取纯中文名用于搜索 (如 "黄金ETF")
+    search_name = name.split('(')[0] if '(' in name else name
+    
     if is_cn_stock:
-        search_term = name.split('(')[0] 
-        news_items, avg = get_google_news(search_term, 'zh-CN')
+        # A股：使用 Google News 搜中文名
+        news_items, avg = get_google_news(search_name, 'zh-CN')
         source_type = "Google (A股)"
     else:
         try:
@@ -123,21 +127,15 @@ def get_news_and_sentiment(ticker, name):
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
-        # 雪球和东财代码后缀是大写
+        market_prefix = "sh" if ticker.endswith('.SS') else "sz"
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
         
-        # 🔥 链接逻辑大升级
         links = {
-            # 雪球：最稳
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
-            
-            # 东财：ETF 用 fund.eastmoney, 股票用 quote.eastmoney (这里统一用 quote 兼容性较好)
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            
-            # 财联社：必须用 searchPage，因为 ETF 没有个股页
-            "cls": f"https://www.cls.cn/searchPage?keyword={pure_code}",
-            
-            # 同花顺：使用爱问财 (iWencai)，它是万能的，会自动识别 ETF 并跳转
+            # 🔥 修复：财联社搜名称 (如 "黄金ETF")，保证有结果
+            "cls": f"https://www.cls.cn/searchPage?keyword={search_name}",
+            # 同花顺：爱问财 (智能识别ETF)
             "10jqka": f"http://www.iwencai.com/unifiedwap/result?w={pure_code}"
         }
         
