@@ -158,32 +158,49 @@ def smart_format_code(raw_code):
         elif len(code) <= 5: return f"{int(code):04d}.HK"
     return code 
 
-# 🔥 核心升级：增加 GBK 解码，强制获取中文名
+# 🔥 核心升级：使用腾讯接口 + 强制 GBK 解码
 def fetch_stock_name(symbol):
+    pure_code = symbol.split(".")[0]
+    
+    # 1. 优先尝试腾讯财经接口 (速度快，结构清晰)
     try:
-        # 1. A股/港股 (使用新浪接口，带 GBK 解码)
-        if symbol.endswith(".SS") or symbol.endswith(".SZ") or symbol.endswith(".HK"):
-            sina_code = ""
-            if symbol.endswith(".SS"): sina_code = "sh" + symbol.replace(".SS", "")
-            elif symbol.endswith(".SZ"): sina_code = "sz" + symbol.replace(".SZ", "")
-            elif symbol.endswith(".HK"): sina_code = "hk" + symbol.replace(".HK", "")
+        market_prefix = ""
+        if ".SS" in symbol: market_prefix = "sh"
+        elif ".SZ" in symbol: market_prefix = "sz"
+        elif ".HK" in symbol: market_prefix = "hk"
+        
+        if market_prefix:
+            # 腾讯接口
+            url = f"http://qt.gtimg.cn/q={market_prefix}{pure_code}"
+            r = requests.get(url, timeout=1)
+            # 🔥 关键：强制指定编码为 GBK
+            r.encoding = 'gbk' 
             
-            # 请求新浪
-            r = requests.get(f"http://hq.sinajs.cn/list={sina_code}", timeout=3)
-            
-            # 🔥 强制使用 GBK 解码 (关键！)
-            text = r.content.decode('gbk')
-            
-            if "=\"" in text:
-                content = text.split("=\"")[1]
-                if len(content) > 1:
-                    name_part = content.split(",")[0]
-                    # 港股名称在第二个位置
-                    if symbol.endswith(".HK"):
-                        name_part = content.split(",")[1]
-                    return name_part
+            if r.status_code == 200 and '="' in r.text:
+                data = r.text.split('="')[1]
+                if len(data) > 10:
+                    # 腾讯数据格式: 1~名称~代码~...
+                    name = data.split('~')[1]
+                    return name
+    except: pass
 
-        # 2. 美股 (使用 Yahoo)
+    # 2. 备选新浪财经接口
+    try:
+        if market_prefix:
+            url = f"http://hq.sinajs.cn/list={market_prefix}{pure_code}"
+            r = requests.get(url, timeout=1)
+            r.encoding = 'gbk'
+            if r.status_code == 200 and '="' in r.text:
+                data = r.text.split('="')[1]
+                if len(data) > 10:
+                    name = data.split(',')[0]
+                    # 港股名称在第2个位置
+                    if market_prefix == 'hk': name = data.split(',')[1]
+                    return name
+    except: pass
+
+    # 3. 实在不行，用 Yahoo (通常是英文)
+    try:
         t = yf.Ticker(symbol)
         return t.info.get('shortName') or t.info.get('longName') or symbol
     except:
@@ -437,7 +454,7 @@ def render_clickable_list(df, tab_key, strategy_mode):
     st.markdown("---")
     return target_row
 
-# --- 页面渲染函数 ---
+# --- 页面渲染 ---
 def render_common(assets, tab_key, strategy_mode, custom_short, custom_long):
     with st.spinner("计算中..."): df = fetch_and_calculate(assets, strategy_mode, custom_short=custom_short, custom_long=custom_long); asc=True if ("RSI" in strategy_mode) or ("超跌" in strategy_mode) else False
     if df.empty: st.warning("暂无数据"); return
