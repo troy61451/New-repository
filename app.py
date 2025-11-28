@@ -96,12 +96,12 @@ def get_google_news(query, lang='zh-CN'):
         print(f"Google RSS Error: {e}")
         return [], 0
 
-# 新闻引擎 (🔥 修复了财联社链接)
+# 新闻引擎 (含财联社修复)
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
     
     if is_cn_stock:
-        # A股
+        # A股：使用 Google News 搜中文名
         search_term = name.split('(')[0] 
         news_items, avg = get_google_news(search_term, 'zh-CN')
         source_type = "Google (A股)"
@@ -131,14 +131,12 @@ def get_news_and_sentiment(ticker, name):
         pure_code = ticker.split('.')[0]
         # 判断市场前缀 (财联社需要 sh 或 sz 小写)
         market_prefix = "sh" if ticker.endswith('.SS') else "sz"
-        
-        # 东方财富需要 SH 或 SZ 大写
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
         
         links = {
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            # 🔥 修复：使用财联社个股详情页 (https://www.cls.cn/stock/sh512480)
+            # 🔥 财联社直达链接
             "cls": f"https://www.cls.cn/stock/{market_prefix}{pure_code}"
         }
         
@@ -282,6 +280,7 @@ def load_csi500_rank():
     try: return pd.read_csv("csi500_rank.csv")
     except: return pd.DataFrame()
 
+# 🔥 补全的回测渲染函数
 def run_backtest(pool_name, start_date, end_date):
     if pool_name == "全球宏观": assets = ASSETS_GLOBAL 
     else: assets = ASSETS_CN
@@ -314,6 +313,17 @@ def run_backtest(pool_name, start_date, end_date):
             fig.update_layout(template='plotly_dark', title="资金曲线", height=450)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"出错: {e}")
+
+# 🔥 补全的回测渲染页面
+def render_backtest():
+    st.header("⏳ 策略时光机")
+    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
+    c1, c2, c3 = st.columns(3)
+    pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
+    start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
+    end = c3.date_input("结束日期", value=datetime.today())
+    if st.button("🚀 开始回测", type="primary"):
+        run_backtest(pool, start, end)
 
 # ==========================================
 # 5. 渲染页面
@@ -380,11 +390,11 @@ def render_news():
         name = selected_asset.split(" | ")[0]
         code = selected_asset.split(" | ")[1]
         if st.button("📡 扫描舆情", type="primary"):
-            with st.spinner("正在定位舆情源..."):
+            with st.spinner("正在聚合全网新闻..."):
                 news_items, avg, source_type, links = get_news_and_sentiment(code, name)
                 
                 if links:
-                    st.success(f"✅ {name} 舆情源已定位")
+                    st.success(f"✅ {name} 社区讨论区已定位")
                     c1, c2, c3 = st.columns(3)
                     with c1: st.link_button("❄️ 雪球讨论", links['xueqiu'])
                     with c2: st.link_button("🇨🇳 东财资讯", links['eastmoney'])
@@ -403,6 +413,7 @@ def render_news():
                     if avg > 0.1: emoji = "😄 (利好)"
                     elif avg < -0.1: emoji = "😨 (利空)"
                     c2.metric("情感得分", f"{avg:.2f}", emoji)
+                    
                     st.markdown("---")
                     for n in news_items:
                         color = "gray"
