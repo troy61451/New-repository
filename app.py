@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import requests
-import xml.etree.ElementTree as ET # 原生库，解析RSS XML
+import xml.etree.ElementTree as ET
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from textblob import TextBlob 
@@ -60,76 +60,50 @@ def get_market_temperature():
         return (bull_count / total_count) * 100
     except: return 50
 
-# 🔥 新增：Google News RSS 解析引擎
+# Google News RSS 解析引擎
 def get_google_news(query, lang='zh-CN'):
-    # 构造 RSS 链接
     rss_url = f"https://news.google.com/rss/search?q={query}&hl={lang}&gl=CN&ceid=CN:{lang}"
-    
     try:
         response = requests.get(rss_url, timeout=5)
         root = ET.fromstring(response.content)
-        
         news_items = []
         total_score = 0
         count = 0
-        
-        # 解析 XML (取前 10 条)
         for item in root.findall('./channel/item')[:10]:
             title = item.find('title').text
             link = item.find('link').text
             pub_date = item.find('pubDate').text
-            
-            # 情感分析
             try:
-                # 判断是否包含中文
                 if any(u'\u4e00' <= c <= u'\u9fff' for c in title):
                     s = SnowNLP(title)
-                    score = (s.sentiments - 0.5) * 2 # 归一化到 -1~1
+                    score = (s.sentiments - 0.5) * 2 
                 else:
                     blob = TextBlob(title)
                     score = blob.sentiment.polarity
-            except:
-                score = 0
+            except: score = 0
             
             total_score += score
             count += 1
-            
-            # 格式化时间 (简化显示)
             try:
                 dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
                 time_str = dt.strftime('%m-%d %H:%M')
-            except:
-                time_str = pub_date
+            except: time_str = pub_date
 
-            news_items.append({
-                "title": title,
-                "link": link,
-                "time": time_str,
-                "score": score,
-                "source": "Google News"
-            })
-            
+            news_items.append({"title": title, "link": link, "time": time_str, "score": score, "source": "Google News"})
         avg_score = total_score / count if count > 0 else 0
         return news_items, avg_score
     except Exception as e:
         print(f"Google RSS Error: {e}")
         return [], 0
 
-# 混合新闻引擎 (Yahoo + Google)
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
-    
-    # 1. 尝试获取新闻
     if is_cn_stock:
-        # A股：优先用 Google News 搜中文名 (比如 "半导体ETF")
-        # 去掉名称里的括号备注，提高搜索准确度
         search_term = name.split('(')[0] 
         news_items, avg = get_google_news(search_term, 'zh-CN')
         source_type = "Google (A股)"
     else:
-        # 美股：优先 Yahoo，如果失败则 Google 兜底
         try:
-            # 尝试 Yahoo
             news_list = yf.Ticker(ticker).news
             if news_list:
                 news_items = []
@@ -140,31 +114,19 @@ def get_news_and_sentiment(ticker, name):
                     score = blob.sentiment.polarity
                     total += score
                     pub_time = datetime.fromtimestamp(item.get('providerPublishTime', 0))
-                    news_items.append({
-                        "title": title,
-                        "link": item.get('link', ''),
-                        "time": pub_time.strftime('%Y-%m-%d %H:%M'),
-                        "score": score,
-                        "source": item.get('publisher', 'Yahoo')
-                    })
+                    news_items.append({"title": title, "link": item.get('link', ''), "time": pub_time.strftime('%Y-%m-%d %H:%M'), "score": score, "source": item.get('publisher', 'Yahoo')})
                 avg = total / len(news_items)
                 source_type = "Yahoo Finance"
-            else:
-                raise Exception("Yahoo empty")
+            else: raise Exception("Yahoo empty")
         except:
-            # Yahoo 失败，用 Google 搜代码 (如 "EWZ ETF")
             news_items, avg = get_google_news(f"{ticker} stock", 'en-US')
             source_type = "Google (Global)"
 
-    # 2. 生成跳转链接 (A股专用)
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
         market = "SH" if ticker.endswith('.SS') else "SZ"
-        links = {
-            "xueqiu": f"https://xueqiu.com/S/{market}{pure_code}",
-            "eastmoney": f"http://quote.eastmoney.com/{market.lower()}{pure_code}.html"
-        }
+        links = {"xueqiu": f"https://xueqiu.com/S/{market}{pure_code}", "eastmoney": f"http://quote.eastmoney.com/{market.lower()}{pure_code}.html"}
         
     return news_items, avg, source_type, links
 
@@ -212,7 +174,7 @@ with st.sidebar:
         with c2: custom_long = st.number_input("长期", 2, 300, 30)
 
     st.markdown("---")
-    if st.button("🔄 刷新数据 (修复)", type="primary"):
+    if st.button("🔄 刷新数据", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
@@ -395,19 +357,25 @@ def render_500():
     st.download_button("📥 下载排名", csv, "csi500.csv", "text/csv", key="btn_500")
     st.dataframe(df, use_container_width=True)
 
-# 🔥 修复版舆情雷达 (混合源 + Google 兜底)
+# 🔥 缺失的函数补回来了
+def render_backtest():
+    st.header("⏳ 策略时光机")
+    st.info("验证：使用【复权价格】(auto_adjust) 回测，精确处理分红拆股。")
+    c1, c2, c3 = st.columns(3)
+    pool = c1.selectbox("选择资产池", ["全球宏观", "A股行业"])
+    start = c2.date_input("开始日期", value=datetime(2022, 1, 1))
+    end = c3.date_input("结束日期", value=datetime.today())
+    if st.button("🚀 开始回测", type="primary"):
+        run_backtest(pool, start, end)
+
 def render_news():
     st.header("📰 双语舆情雷达")
-    st.info("💡 混合模式：Google News (聚合全网) + 雪球/东财直达")
-    
     all_options = {**ASSETS_GLOBAL, **ASSETS_CN}
     asset_list = [f"{k} | {v}" for k,v in all_options.items()]
     selected_asset = st.selectbox("🔍 选择资产:", asset_list)
-    
     if selected_asset:
         name = selected_asset.split(" | ")[0]
         code = selected_asset.split(" | ")[1]
-        
         if st.button("📡 扫描舆情", type="primary"):
             with st.spinner("正在聚合全网新闻..."):
                 news_items, avg, source_type, links = get_news_and_sentiment(code, name)
@@ -421,6 +389,8 @@ def render_news():
 
                 if not news_items:
                     st.warning(f"⚠️ {source_type} 暂未收录最新报道")
+                    google_url = f"https://www.google.com/search?q={name}+stock+news&tbm=nws"
+                    st.link_button("🔍 Google搜索兜底", google_url)
                 else:
                     st.caption(f"数据来源: {source_type}")
                     c1, c2 = st.columns(2)
