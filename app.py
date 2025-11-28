@@ -97,12 +97,13 @@ def get_google_news(query, lang='zh-CN'):
 def get_news_and_sentiment(ticker, name):
     is_cn_stock = ticker.endswith('.SS') or ticker.endswith('.SZ')
     
-    # 提取纯中文名用于搜索 (如 "黄金ETF")
-    search_name = name.split('(')[0] if '(' in name else name
+    # 🔥 智能提取中文名：把 "半导体ETF" 拿出来，去掉括号
+    # 逻辑：取括号前的部分，如果名字里包含ETF，再把ETF三个字也去掉，只搜核心词（如“半导体”），这样搜财联社最准
+    clean_name = name.split('(')[0]
+    search_name = clean_name.replace("ETF", "") # 进一步净化，搜 "半导体" 比搜 "半导体ETF" 资讯更多
     
     if is_cn_stock:
-        # A股：使用 Google News 搜中文名
-        news_items, avg = get_google_news(search_name, 'zh-CN')
+        news_items, avg = get_google_news(clean_name, 'zh-CN')
         source_type = "Google (A股)"
     else:
         try:
@@ -127,15 +128,14 @@ def get_news_and_sentiment(ticker, name):
     links = {}
     if is_cn_stock:
         pure_code = ticker.split('.')[0]
-        market_prefix = "sh" if ticker.endswith('.SS') else "sz"
         em_market = "SH" if ticker.endswith('.SS') else "SZ"
         
         links = {
             "xueqiu": f"https://xueqiu.com/S/{em_market}{pure_code}",
             "eastmoney": f"http://quote.eastmoney.com/{em_market.lower()}{pure_code}.html",
-            # 🔥 修复：财联社搜名称 (如 "黄金ETF")，保证有结果
+            # 🔥 修复：财联社搜 "核心中文名" (如 "半导体")，不再搜代码
             "cls": f"https://www.cls.cn/searchPage?keyword={search_name}",
-            # 同花顺：爱问财 (智能识别ETF)
+            # 同花顺：爱问财
             "10jqka": f"http://www.iwencai.com/unifiedwap/result?w={pure_code}"
         }
         
